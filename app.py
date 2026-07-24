@@ -53,6 +53,23 @@ def effective_game_date(stored, today):
     return chosen if chosen and chosen >= today else next_thursday_on_or_after(today)
 
 
+def clean_text(value, label, low, high, message=None):
+    """Text from a form: no control or invisible characters, extra spaces collapsed, length checked."""
+    if not isinstance(value, str):
+        raise PollError(message or f"{label} must be text.")
+    text = unicodedata.normalize("NFC", value)
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs", "Cn") and not ch.isspace() for ch in text):
+        raise PollError(f"{label} contains characters that are not allowed.")
+    text = " ".join(text.split())
+    if not low <= len(text) <= high:
+        raise PollError(message or f"{label} must be {low} to {high} characters.")
+    return text
+
+
+def name_key(name):
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
 class Store:
     def __init__(self, data_dir, today=date.today):
         self.dir = Path(data_dir)
