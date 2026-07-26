@@ -155,3 +155,56 @@ class Store:
                              "location": settings["location"], "max_players": int(settings["max_players"])},
                 "rsvps": rsvps, "permits": permits, "recent": recent,
                 "has_sample": any(r["is_sample"] for r in rsvps + permits)}
+
+
+    def save_rsvp(self, name, status):
+        name = clean_text(name, "Your name", 1, 36, "Enter your name (up to 36 characters).")
+        if not isinstance(status, str) or status not in STATUSES:
+            raise PollError("Choose going, maybe or out.")
+        key = name_key(name)
+        with self.tx() as db:
+            game = self._game_date(db).isoformat()
+            exists = db.execute("SELECT 1 FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
+            if not exists and db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ?", (game,)).fetchone()[0] >= MAX_RSVPS_PER_GAME:
+                raise PollError("This game already has the maximum number of replies.", 409)
+            if status == "going":
+                limit = int(self._settings(db)["max_players"])
+                taken = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND is_sample = 0 AND name_key != ?",
+                                   (game, key)).fetchone()[0]
+                if taken >= limit:
+                    raise PollError("The squad is full. Check with the organizer about a spot.", 409)
+            db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample) VALUES (?, ?, ?, ?, ?, 0) "
+                       "ON CONFLICT(game_date, name_key) DO UPDATE SET name = excluded.name, status = excluded.status, "
+                       "updated_at = excluded.updated_at, is_sample = 0",
+                       (game, key, name, status, datetime.now().isoformat(timespec="minutes")))
+
+    def delete_rsvp(self, name):
+        name = clean_text(name, "Player", 1, 36, "Choose a player to remove.")
+        with self.tx() as db:
+            db.execute("DELETE FROM rsvps WHERE game_date = ? AND name_key = ?", (self._game_date(db).isoformat(), name_key(name)))
+
+    def update_game(self, data):
+        club = clean_text(data.get("club_name"), "The club name", 2, 48, "Club name must be 2 to 48 characters.")
+        location = clean_text(data.get("location"), "The location", 2, 100, "Add a field or meeting point.")
+        try:
+            chosen = date.fromisoformat(data.get("game_date"))
+        except (TypeError, ValueError):
+            raise PollError("Choose a valid Thursday.")
+        if chosen.weekday() != 3:
+            raise PollError("Game day must be a Thursday.")
+        if chosen < self.today():
+            raise PollError("That Thursday has already passed.")
+        kickoff = data.get("kickoff")
+        if not isinstance(kickoff, str) or not TIME_RE.fullmatch(kickoff):
+            raise PollError("Choose a valid kickoff time.")
+        capacity = data.get("max_players")
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or not 2 <= capacity <= 40:
+            raise PollError("Squad size must be between 2 and 40.")
+        with self.tx() as db:
+            going = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND is_sample = 0",
+                               (chosen.isoformat(),)).fetchone()[0]
+            if capacity < going:
+                raise PollError(f"{going} players are already going on that date. Choose a squad size of at least {going}.", 409)
+            for key, value in (("club_name", club), ("location", location), ("game_date", chosen.isoformat()),
+                               ("kickoff", kickoff), ("max_players", str(capacity))):
+                db.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
