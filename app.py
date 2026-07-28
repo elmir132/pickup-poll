@@ -208,3 +208,25 @@ class Store:
             for key, value in (("club_name", club), ("location", location), ("game_date", chosen.isoformat()),
                                ("kickoff", kickoff), ("max_players", str(capacity))):
                 db.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+
+
+    def add_permit(self, title, permit_date, note):
+        title = clean_text(title, "The title", 2, 60, "Give the permit reminder a short title.")
+        note = clean_text(note if note is not None else "", "The note", 0, 120, "Notes can be up to 120 characters.")
+        try:
+            due = date.fromisoformat(permit_date)
+        except (TypeError, ValueError):
+            raise PollError("Choose a valid date.")
+        today = self.today()
+        if due < today:
+            raise PollError("That date has already passed. Choose today or a later date.")
+        if due > today + timedelta(days=3 * 366):
+            raise PollError("Choose a date within the next three years.")
+        with self.tx() as db:
+            if db.execute("SELECT COUNT(*) FROM permits").fetchone()[0] >= MAX_PERMITS:
+                raise PollError("There are already 50 reminders. Remove one first.", 409)
+            db.execute("INSERT INTO permits(title, date, note) VALUES (?, ?, ?)", (title, due.isoformat(), note))
+
+    def delete_permit(self, permit_id):
+        with self.tx() as db:
+            db.execute("DELETE FROM permits WHERE id = ?", (permit_id,))
