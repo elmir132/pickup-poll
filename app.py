@@ -3,6 +3,8 @@
 
 Standard library only. Answers belong to a game date, so every week starts empty. Changes to
 the match, the permit dates and removing players need an organizer PIN whenever the server can
+be reached from other devices. Changes to
+the match, the permit dates and removing players need an organizer PIN whenever the server can
 be reached from other devices. Every write must come from this page itself, so another website
 open in your browser cannot change anything.
 """
