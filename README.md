@@ -7,3 +7,5 @@ A small RSVP board for a weekly football club.
 ```bash
 python3 app.py
 ```
+
+Options: `--demo` starts with clearly marked sample players and dates.
