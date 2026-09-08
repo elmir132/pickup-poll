@@ -296,7 +296,24 @@ function openPermitDialog() {
   $("#permit-dialog").showModal();
 }
 
+function showView(name) {
+  const permits = name === "permits";
+  document.body.classList.toggle("view-permits", permits);
+  $$(".nav-link").forEach(link => {
+    const active = link.dataset.view === (permits ? "permits" : "match");
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+  });
+  window.scrollTo({ top: 0 });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  $$(".nav-link").forEach(link => link.addEventListener("click", event => {
+    event.preventDefault();
+    history.replaceState(null, "", "#" + link.dataset.view);
+    showView(link.dataset.view);
+  }));
+  showView(location.hash === "#permits" ? "permits" : "match");
   const savedName = localStorage.getItem("pickup-poll-name");
   if (savedName) $("#player-name").value = savedName;
   loadState();
