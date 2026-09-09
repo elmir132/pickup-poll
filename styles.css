@@ -284,3 +284,10 @@ h1 { color: #1c2a20; font-size: clamp(34px, 4.2vw, 49px); line-height: 1.07; let
 body.view-permits .intro-row, body.view-permits .match-card, body.view-permits .squad-strip, body.view-permits .rsvp-panel { display: none; }
 body.view-permits .content-grid { grid-template-columns: 1fr; }
 body.view-permits .permits-panel { min-height: 420px; }
+
+.pitch-dots { position: absolute; inset: 0; }
+.pitch-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: #fffefa; box-shadow: 0 0 0 2px rgba(14,43,33,.55), 0 0 10px rgba(255,254,250,.55); transition: left .4s ease, top .4s ease; }
+.pitch-dot.team-1 { background: var(--orange); box-shadow: 0 0 0 2px rgba(14,43,33,.55), 0 0 10px rgba(242,162,115,.6); }
+.pitch-dot.pop { animation: dot-pop .7s ease-out; }
+@keyframes dot-pop { 0% { transform: scale(0); opacity: 0; } 55% { transform: scale(2.3); opacity: 1; } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .pitch-dot.pop { animation: none; } }

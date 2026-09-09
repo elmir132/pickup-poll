@@ -49,6 +49,21 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => element.classList.remove("visible"), 3000);
 }
 
+// A random token kept in this browser proves which names were added from here. getRandomValues also works on plain http.
+function playerToken() {
+  try {
+    let token = localStorage.getItem("pickup-poll-token");
+    if (!token) {
+      token = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
+      localStorage.setItem("pickup-poll-token", token);
+    }
+    return token;
+  } catch (error) {
+    window.pickupPollTempToken = window.pickupPollTempToken || Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
+    return window.pickupPollTempToken;
+  }
+}
+
 function storedPin() {
   try { return sessionStorage.getItem("pickup-poll-pin") || ""; } catch (error) { return ""; }
 }
@@ -59,7 +74,7 @@ function storePin(pin) {
 
 async function api(url, options = {}) {
   const method = options.method || "GET";
-  const headers = { ...(options.headers || {}) };
+  const headers = { ...(options.headers || {}), "X-Player-Token": playerToken() };
   if (method !== "GET") {
     headers["X-Pickup-Poll"] = "1";
     if (options.body) headers["Content-Type"] = "application/json";
@@ -147,6 +162,7 @@ function render() {
   $("#roster-total").textContent = `${rsvps.length} player${rsvps.length === 1 ? "" : "s"}`;
   $("#demo-note").classList.toggle("hidden", !appState.has_sample);
   renderRecent(appState.recent || []);
+  renderPitch(going);
   $("#capacity-track").value = Math.min(going.length, max);
   $("#capacity-track").setAttribute("aria-valuemax", max);
   $("#capacity-track").setAttribute("aria-valuenow", going.length);
@@ -171,6 +187,46 @@ function render() {
 
   renderRoster(rsvps);
   renderPermits(permits);
+}
+
+// One dot per player who is going: two teams, one half of the pitch each, in the order people joined.
+const TEAM_COLUMNS = [[50], [25, 50, 75], [20, 40, 60, 80], [30, 50, 70]];
+const TEAM_X = [8, 20, 33, 44];
+let renderedDots = null;
+
+function pitchSlot(index) {
+  const team = index % 2;
+  const k = Math.floor(index / 2);
+  let x, y, used = 0;
+  for (let column = 0; column < TEAM_COLUMNS.length; column += 1) {
+    const ys = TEAM_COLUMNS[column];
+    if (k < used + ys.length) { x = TEAM_X[column]; y = ys[k - used]; break; }
+    used += ys.length;
+  }
+  if (x === undefined) {            // more than 11 a side: spare players along the touchlines
+    const extra = k - used;
+    x = 12 + (extra % 5) * 8;
+    y = extra % 2 === 0 ? 8 : 92;
+  }
+  return { team, left: team === 0 ? x : 100 - x, top: y };
+}
+
+function renderPitch(going) {
+  const holder = $("#pitch-dots");
+  const players = going.slice().sort((a, b) => a.seq - b.seq);
+  const previous = renderedDots;
+  renderedDots = new Set(players.map(player => player.seq));
+  holder.replaceChildren();
+  players.forEach((player, index) => {
+    const slot = pitchSlot(index);
+    const dot = document.createElement("span");
+    dot.className = `pitch-dot team-${slot.team}` + (previous && !previous.has(player.seq) ? " pop" : "");
+    dot.style.left = `${slot.left}%`;
+    dot.style.top = `${slot.top}%`;
+    dot.title = player.name;
+    holder.append(dot);
+  });
+  $("#pitch-count").textContent = players.length ? `${players.length} on the pitch` : "";
 }
 
 function renderRecent(recent) {
@@ -209,7 +265,9 @@ function renderRoster(rsvps) {
     remove.setAttribute("aria-label", `Remove ${player.name}`);
     remove.title = "Remove RSVP";
     remove.textContent = "×";
-    row.append(avatar, name, status, remove);
+    remove.title = "Remove my name";
+    if (player.mine) row.append(avatar, name, status, remove);
+    else row.append(avatar, name, status);
     list.append(row);
   });
 }
@@ -383,9 +441,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (target.dataset.action === "remove-rsvp") {
       try {
-        const next = await asOrganizer(() => api(`/api/rsvps?name=${encodeURIComponent(target.dataset.name)}`, { method: "DELETE" }));
-        if (!next) return;
-        appState = next;
+        appState = await api(`/api/rsvps?name=${encodeURIComponent(target.dataset.name)}`, { method: "DELETE" });
         render();
         toast("RSVP removed.");
       } catch (error) { toast(error.message, true); }

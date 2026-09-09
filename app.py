@@ -3,12 +3,11 @@
 
 Standard library only. Answers belong to a game date, so every week starts empty. Changes to
 the match, the permit dates and removing players need an organizer PIN whenever the server can
-be reached from other devices. Changes to
-the match, the permit dates and removing players need an organizer PIN whenever the server can
 be reached from other devices. Every write must come from this page itself, so another website
 open in your browser cannot change anything.
 """
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -31,6 +30,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/ics.js": ("ics.js", "text/javascript; charset=utf-8")}
 STATUSES = ("going", "maybe", "out")
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_BODY = 16_384
 MAX_RSVPS_PER_GAME = 200
@@ -76,6 +76,13 @@ def clean_text(value, label, low, high, message=None):
     if not low <= len(text) <= high:
         raise PollError(message or f"{label} must be {low} to {high} characters.")
     return text
+
+
+def token_hash(token):
+    """Players are told apart by a random token their browser keeps. Only its hash is stored."""
+    if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+        raise PollError("Reload the page and try again.", 400)
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
 
 
 def name_key(name):
@@ -140,8 +147,11 @@ class Store:
                 status TEXT NOT NULL CHECK(status IN ('going', 'maybe', 'out')),
                 updated_at TEXT NOT NULL,
                 is_sample INTEGER NOT NULL DEFAULT 0,
+                owner_hash TEXT,
                 PRIMARY KEY (game_date, name_key)
             )""")
+        if "owner_hash" not in {r["name"] for r in db.execute("PRAGMA table_info(rsvps)")}:
+            db.execute("ALTER TABLE rsvps ADD COLUMN owner_hash TEXT")
         db.execute("""CREATE TABLE IF NOT EXISTS permits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -164,11 +174,11 @@ class Store:
         db.execute("DROP TABLE rsvps")
         db.execute("""CREATE TABLE rsvps (game_date TEXT NOT NULL, name_key TEXT NOT NULL, name TEXT NOT NULL,
                       status TEXT NOT NULL CHECK(status IN ('going', 'maybe', 'out')), updated_at TEXT NOT NULL,
-                      is_sample INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (game_date, name_key))""")
+                      is_sample INTEGER NOT NULL DEFAULT 0, owner_hash TEXT, PRIMARY KEY (game_date, name_key))""")
         stamps = {r["updated_at"] for r in old if r["name"] in SAMPLE_NAMES}
         for row in old:
             sample = int(row["name"] in SAMPLE_NAMES and len(stamps) == 1 and row["updated_at"] in stamps)
-            db.execute("INSERT OR IGNORE INTO rsvps VALUES (?, ?, ?, ?, ?, ?)",
+            db.execute("INSERT OR IGNORE INTO rsvps(game_date, name_key, name, status, updated_at, is_sample) VALUES (?, ?, ?, ?, ?, ?)",
                        (game, name_key(row["name"]), row["name"], row["status"], row["updated_at"], sample))
 
     def _seed_demo(self, db):
@@ -180,7 +190,8 @@ class Store:
         if db.execute("SELECT COUNT(*) FROM rsvps").fetchone()[0] == 0:
             stamp = datetime.now().isoformat(timespec="minutes")
             for name, status in zip(SAMPLE_NAMES, ("going",) * 5 + ("maybe",)):
-                db.execute("INSERT INTO rsvps VALUES (?, ?, ?, ?, ?, 1)", (game, name_key(name), name, status, stamp))
+                db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample) VALUES (?, ?, ?, ?, ?, 1)",
+                           (game, name_key(name), name, status, stamp))
         if db.execute("SELECT COUNT(*) FROM permits").fetchone()[0] == 0:
             today = self.today()
             for title, days, note in (("Field-use permit", 18, "Sample date · replace with your permit deadline"),
@@ -196,12 +207,15 @@ class Store:
     def _game_date(self, db):
         return effective_game_date(self._settings(db).get("game_date"), self.today())
 
-    def state(self):
+    def state(self, token=None):
+        mine = None
+        if token and TOKEN_RE.fullmatch(token):
+            mine = hashlib.sha256(token.encode("ascii")).hexdigest()
         with closing(self.connect()) as db:
             settings = self._settings(db)
             game = effective_game_date(settings.get("game_date"), self.today())
             rsvps = [dict(r) for r in db.execute(
-                "SELECT name, status, updated_at, is_sample FROM rsvps WHERE game_date = ? ORDER BY "
+                "SELECT rowid AS seq, name, status, updated_at, is_sample, owner_hash FROM rsvps WHERE game_date = ? ORDER BY "
                 "CASE status WHEN 'going' THEN 0 WHEN 'maybe' THEN 1 ELSE 2 END, name COLLATE NOCASE", (game.isoformat(),))]
             permits = [dict(r) for r in db.execute("SELECT id, title, date, note, is_sample FROM permits ORDER BY date, id")]
             recent = [dict(r) for r in db.execute(
@@ -209,6 +223,9 @@ class Store:
                 "FROM rsvps WHERE game_date < ? AND is_sample = 0 GROUP BY game_date ORDER BY game_date DESC LIMIT 4", (self.today().isoformat(),))]
         for row in rsvps + permits:
             row["is_sample"] = bool(row["is_sample"])
+        for row in rsvps:
+            owner = row.pop("owner_hash")                                   # the hash itself is never sent
+            row["mine"] = bool(mine) and owner == mine
         return {"today": self.today().isoformat(),
                 "settings": {"club_name": settings["club_name"], "game_date": game.isoformat(), "kickoff": settings["kickoff"],
                              "location": settings["location"], "max_players": int(settings["max_players"])},
@@ -217,15 +234,18 @@ class Store:
 
     # -- writing --------------------------------------------------------------
 
-    def save_rsvp(self, name, status):
+    def save_rsvp(self, name, status, token):
         name = clean_text(name, "Your name", 1, 36, "Enter your name (up to 36 characters).")
         if not isinstance(status, str) or status not in STATUSES:
             raise PollError("Choose going, maybe or out.")
+        owner = token_hash(token)
         key = name_key(name)
         with self.tx() as db:
             game = self._game_date(db).isoformat()
-            exists = db.execute("SELECT 1 FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
-            if not exists and db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ?", (game,)).fetchone()[0] >= MAX_RSVPS_PER_GAME:
+            row = db.execute("SELECT owner_hash, is_sample FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
+            if row and row["owner_hash"] and row["owner_hash"] != owner and not row["is_sample"]:
+                raise PollError("That name was added from another device. Use a different name (for example add an initial).", 403)
+            if not row and db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ?", (game,)).fetchone()[0] >= MAX_RSVPS_PER_GAME:
                 raise PollError("This game already has the maximum number of replies.", 409)
             if status == "going":
                 limit = int(self._settings(db)["max_players"])
@@ -233,15 +253,23 @@ class Store:
                                    (game, key)).fetchone()[0]
                 if taken >= limit:
                     raise PollError("The squad is full. Check with the organizer about a spot.", 409)
-            db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample) VALUES (?, ?, ?, ?, ?, 0) "
+            db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample, owner_hash) VALUES (?, ?, ?, ?, ?, 0, ?) "
                        "ON CONFLICT(game_date, name_key) DO UPDATE SET name = excluded.name, status = excluded.status, "
-                       "updated_at = excluded.updated_at, is_sample = 0",
-                       (game, key, name, status, datetime.now().isoformat(timespec="minutes")))
+                       "updated_at = excluded.updated_at, is_sample = 0, owner_hash = COALESCE(rsvps.owner_hash, excluded.owner_hash)",
+                       (game, key, name, status, datetime.now().isoformat(timespec="minutes"), owner))
 
-    def delete_rsvp(self, name):
+    def delete_rsvp(self, name, token):
+        """Only the browser that added a name can remove it. Nobody can remove anyone else's."""
         name = clean_text(name, "Player", 1, 36, "Choose a player to remove.")
+        owner = token_hash(token)
         with self.tx() as db:
-            db.execute("DELETE FROM rsvps WHERE game_date = ? AND name_key = ?", (self._game_date(db).isoformat(), name_key(name)))
+            game = self._game_date(db).isoformat()
+            row = db.execute("SELECT owner_hash FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name))).fetchone()
+            if row is None:
+                return
+            if row["owner_hash"] != owner:
+                raise PollError("You can only remove your own name.", 403)
+            db.execute("DELETE FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name)))
 
     def add_permit(self, title, permit_date, note):
         title = clean_text(title, "The title", 2, 60, "Give the permit reminder a short title.")
@@ -460,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
             self._check_host()
             parsed = urlparse(self.path)
             if parsed.path == "/api/state":
-                state = self.poll.store.state()
+                state = self.poll.store.state(self.headers.get("X-Player-Token"))
                 state["organizer_required"] = self.poll.security.pin is not None
                 self._send(200, state)
             elif parsed.path in STATIC:
@@ -481,7 +509,7 @@ class Handler(BaseHTTPRequestHandler):
             data = self._json_body()
             store = self.poll.store
             if path == "/api/rsvps":
-                store.save_rsvp(data.get("name"), data.get("status"))
+                store.save_rsvp(data.get("name"), data.get("status"), self.headers.get("X-Player-Token"))
             elif path in ("/api/unlock", "/api/game", "/api/permits", "/api/clear-sample", "/api/reset-week"):
                 self._need_organizer()
                 if path == "/api/game":
@@ -494,7 +522,7 @@ class Handler(BaseHTTPRequestHandler):
                     store.reset_week()
             else:
                 raise PollError("Not found.", 404)
-            state = store.state()
+            state = store.state(self.headers.get("X-Player-Token"))
             state["organizer_required"] = self.poll.security.pin is not None
             self._send(200, state)
         except PollError as err:
@@ -506,17 +534,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._check_host()
             self._check_write()
-            self._need_organizer()
             if parsed.path == "/api/rsvps":
-                self.poll.store.delete_rsvp(query.get("name", [""])[0])
+                self.poll.store.delete_rsvp(query.get("name", [""])[0], self.headers.get("X-Player-Token"))
             elif parsed.path == "/api/permits":
+                self._need_organizer()
                 try:
                     self.poll.store.delete_permit(int(query.get("id", [""])[0]))
                 except ValueError:
                     raise PollError("That item could not be removed.")
             else:
                 raise PollError("Not found.", 404)
-            state = self.poll.store.state()
+            state = self.poll.store.state(self.headers.get("X-Player-Token"))
             state["organizer_required"] = self.poll.security.pin is not None
             self._send(200, state)
         except PollError as err:
