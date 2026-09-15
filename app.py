@@ -35,6 +35,7 @@ TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_BODY = 16_384
 MAX_RSVPS_PER_GAME = 200
 MAX_PERMITS = 50
+LOCK_DAYS_BEFORE = 1       # from this many days before the game, spots that are going are locked
 SCHEMA_VERSION = 2
 SAMPLE_NAMES = ("Maya T.", "Chris L.", "Jordan K.", "Alex R.", "Sam P.", "Taylor W.")
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
@@ -148,10 +149,13 @@ class Store:
                 updated_at TEXT NOT NULL,
                 is_sample INTEGER NOT NULL DEFAULT 0,
                 owner_hash TEXT,
+                locked INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (game_date, name_key)
             )""")
         if "owner_hash" not in {r["name"] for r in db.execute("PRAGMA table_info(rsvps)")}:
             db.execute("ALTER TABLE rsvps ADD COLUMN owner_hash TEXT")
+        if "locked" not in {r["name"] for r in db.execute("PRAGMA table_info(rsvps)")}:
+            db.execute("ALTER TABLE rsvps ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
         db.execute("""CREATE TABLE IF NOT EXISTS permits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -174,7 +178,7 @@ class Store:
         db.execute("DROP TABLE rsvps")
         db.execute("""CREATE TABLE rsvps (game_date TEXT NOT NULL, name_key TEXT NOT NULL, name TEXT NOT NULL,
                       status TEXT NOT NULL CHECK(status IN ('going', 'maybe', 'out')), updated_at TEXT NOT NULL,
-                      is_sample INTEGER NOT NULL DEFAULT 0, owner_hash TEXT, PRIMARY KEY (game_date, name_key))""")
+                      is_sample INTEGER NOT NULL DEFAULT 0, owner_hash TEXT, locked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (game_date, name_key))""")
         stamps = {r["updated_at"] for r in old if r["name"] in SAMPLE_NAMES}
         for row in old:
             sample = int(row["name"] in SAMPLE_NAMES and len(stamps) == 1 and row["updated_at"] in stamps)
@@ -199,6 +203,10 @@ class Store:
                 db.execute("INSERT INTO permits(title, date, note, is_sample) VALUES (?, ?, ?, 1)",
                            (title, (today + timedelta(days=days)).isoformat(), note))
 
+    def auto_locked(self, game):
+        """True from one day before the game: spots that are going can no longer be dropped."""
+        return (game - self.today()).days <= LOCK_DAYS_BEFORE
+
     # -- reading ------------------------------------------------------------
 
     def _settings(self, db):
@@ -215,20 +223,25 @@ class Store:
             settings = self._settings(db)
             game = effective_game_date(settings.get("game_date"), self.today())
             rsvps = [dict(r) for r in db.execute(
-                "SELECT rowid AS seq, name, status, updated_at, is_sample, owner_hash FROM rsvps WHERE game_date = ? ORDER BY "
+                "SELECT rowid AS seq, name, status, updated_at, is_sample, owner_hash, locked FROM rsvps WHERE game_date = ? ORDER BY "
                 "CASE status WHEN 'going' THEN 0 WHEN 'maybe' THEN 1 ELSE 2 END, name COLLATE NOCASE", (game.isoformat(),))]
             permits = [dict(r) for r in db.execute("SELECT id, title, date, note, is_sample FROM permits ORDER BY date, id")]
             recent = [dict(r) for r in db.execute(
                 "SELECT game_date, SUM(status = 'going') AS going, SUM(status = 'maybe') AS maybe, SUM(status = 'out') AS out "
                 "FROM rsvps WHERE game_date < ? AND is_sample = 0 GROUP BY game_date ORDER BY game_date DESC LIMIT 4", (self.today().isoformat(),))]
+        auto = self.auto_locked(game)
         for row in rsvps + permits:
             row["is_sample"] = bool(row["is_sample"])
         for row in rsvps:
             owner = row.pop("owner_hash")                                   # the hash itself is never sent
             row["mine"] = bool(mine) and owner == mine
+            manual = bool(row.pop("locked"))
+            row["locked"] = row["status"] == "going" and not row["is_sample"] and (manual or auto)
+            row["lock_kind"] = ("manual" if manual else "auto") if row["locked"] else None
         return {"today": self.today().isoformat(),
                 "settings": {"club_name": settings["club_name"], "game_date": game.isoformat(), "kickoff": settings["kickoff"],
-                             "location": settings["location"], "max_players": int(settings["max_players"])},
+                             "location": settings["location"], "max_players": int(settings["max_players"]),
+                             "lock_from": (game - timedelta(days=LOCK_DAYS_BEFORE)).isoformat(), "auto_locked": auto},
                 "rsvps": rsvps, "permits": permits, "recent": recent,
                 "has_sample": any(r["is_sample"] for r in rsvps + permits)}
 
@@ -242,9 +255,11 @@ class Store:
         key = name_key(name)
         with self.tx() as db:
             game = self._game_date(db).isoformat()
-            row = db.execute("SELECT owner_hash, is_sample FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
+            row = db.execute("SELECT owner_hash, is_sample, status, locked FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
             if row and row["owner_hash"] and row["owner_hash"] != owner and not row["is_sample"]:
                 raise PollError("That name was added from another device. Use a different name (for example add an initial).", 403)
+            if row and not row["is_sample"] and row["status"] == "going" and status != "going" and (row["locked"] or self.auto_locked(date.fromisoformat(game))):
+                raise PollError("Your spot is locked in, so you can no longer drop out. Message the organizer if something has come up.", 409)
             if not row and db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ?", (game,)).fetchone()[0] >= MAX_RSVPS_PER_GAME:
                 raise PollError("This game already has the maximum number of replies.", 409)
             if status == "going":
@@ -269,7 +284,28 @@ class Store:
                 return
             if row["owner_hash"] != owner:
                 raise PollError("You can only remove your own name.", 403)
+            if self._is_locked(db, game, name_key(name)):
+                raise PollError("Your spot is locked in, so it can no longer be removed. Message the organizer if something has come up.", 409)
             db.execute("DELETE FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name)))
+
+    def _is_locked(self, db, game, key):
+        row = db.execute("SELECT status, locked, is_sample FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
+        return bool(row) and not row["is_sample"] and row["status"] == "going" and bool(row["locked"] or self.auto_locked(date.fromisoformat(game)))
+
+    def lock_rsvp(self, name, token):
+        """Lock in your own spot. It cannot be undone by the player."""
+        name = clean_text(name, "Player", 1, 36, "Choose a player to lock in.")
+        owner = token_hash(token)
+        with self.tx() as db:
+            game = self._game_date(db).isoformat()
+            row = db.execute("SELECT owner_hash, status, is_sample FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name))).fetchone()
+            if row is None:
+                raise PollError("That name is not on the list.", 404)
+            if row["owner_hash"] != owner:
+                raise PollError("You can only lock in your own name.", 403)
+            if row["status"] != "going":
+                raise PollError("Only a spot that is going can be locked in.", 409)
+            db.execute("UPDATE rsvps SET locked = 1 WHERE game_date = ? AND name_key = ?", (game, name_key(name)))
 
     def add_permit(self, title, permit_date, note):
         title = clean_text(title, "The title", 2, 60, "Give the permit reminder a short title.")
@@ -510,6 +546,8 @@ class Handler(BaseHTTPRequestHandler):
             store = self.poll.store
             if path == "/api/rsvps":
                 store.save_rsvp(data.get("name"), data.get("status"), self.headers.get("X-Player-Token"))
+            elif path == "/api/lock":
+                store.lock_rsvp(data.get("name"), self.headers.get("X-Player-Token"))
             elif path in ("/api/unlock", "/api/game", "/api/permits", "/api/clear-sample", "/api/reset-week"):
                 self._need_organizer()
                 if path == "/api/game":

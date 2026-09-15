@@ -291,3 +291,9 @@ body.view-permits .permits-panel { min-height: 420px; }
 .pitch-dot.pop { animation: dot-pop .7s ease-out; }
 @keyframes dot-pop { 0% { transform: scale(0); opacity: 0; } 55% { transform: scale(2.3); opacity: 1; } 100% { transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .pitch-dot.pop { animation: none; } }
+
+.roster-actions { display: inline-flex; align-items: center; gap: 6px; justify-self: end; min-width: 25px; }
+.lock-button { border: 1px solid var(--line); border-radius: 999px; background: var(--white); color: var(--green); font-size: 10px; font-weight: 700; padding: 4px 9px; cursor: pointer; }
+.lock-button:hover { background: var(--mint); }
+.locked-pill { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; background: var(--mint); color: var(--green); font-size: 10px; font-weight: 700; padding: 4px 9px; white-space: nowrap; }
+.locked-pill::before { content: ""; width: 7px; height: 8px; border: 1.5px solid currentColor; border-radius: 2px; box-sizing: border-box; }

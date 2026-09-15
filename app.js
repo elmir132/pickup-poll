@@ -163,6 +163,10 @@ function render() {
   $("#demo-note").classList.toggle("hidden", !appState.has_sample);
   renderRecent(appState.recent || []);
   renderPitch(going);
+  const lockDate = formatDate(settings.lock_from, { weekday: "long", month: "short", day: "numeric" });
+  $("#rsvp-hint").textContent = settings.auto_locked
+    ? "Spots are locked now: if you are in, you are in. You can still sign up if there is room."
+    : `Already on the list? Use the same name to update your answer. Spots lock from ${lockDate}, or sooner if you press Lock in.`;
   $("#capacity-track").value = Math.min(going.length, max);
   $("#capacity-track").setAttribute("aria-valuemax", max);
   $("#capacity-track").setAttribute("aria-valuenow", going.length);
@@ -266,8 +270,28 @@ function renderRoster(rsvps) {
     remove.title = "Remove RSVP";
     remove.textContent = "×";
     remove.title = "Remove my name";
-    if (player.mine) row.append(avatar, name, status, remove);
-    else row.append(avatar, name, status);
+    const actions = document.createElement("span");
+    actions.className = "roster-actions";
+    if (player.locked) {
+      const lock = document.createElement("span");
+      lock.className = "locked-pill";
+      lock.textContent = "Locked in";
+      lock.title = player.lock_kind === "auto" ? "Spots lock automatically one day before the game" : "This player locked in their spot";
+      actions.append(lock);
+    } else if (player.mine) {
+      if (player.status === "going" && !player.is_sample) {
+        const lockButton = document.createElement("button");
+        lockButton.className = "lock-button";
+        lockButton.type = "button";
+        lockButton.dataset.action = "lock-rsvp";
+        lockButton.dataset.name = player.name;
+        lockButton.textContent = "Lock in";
+        lockButton.title = "Lock in your spot. You will not be able to remove it.";
+        actions.append(lockButton);
+      }
+      actions.append(remove);
+    }
+    row.append(avatar, name, status, actions);
     list.append(row);
   });
 }
@@ -437,6 +461,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (target.dataset.action === "calendar") {
       const permit = appState?.permits.find(item => String(item.id) === target.dataset.id);
       if (permit) downloadCalendar(permit);
+      return;
+    }
+    if (target.dataset.action === "lock-rsvp") {
+      if (!confirm("Lock in your spot? After this you cannot remove it or change to Maybe or Out.")) return;
+      try {
+        appState = await api("/api/lock", { method: "POST", body: JSON.stringify({ name: target.dataset.name }) });
+        render();
+        toast("You are locked in.");
+      } catch (error) { toast(error.message, true); }
       return;
     }
     if (target.dataset.action === "remove-rsvp") {
