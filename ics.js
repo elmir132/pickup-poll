@@ -40,7 +40,23 @@
     ].join("\r\n") + "\r\n";
   }
 
-  const api = { buildIcs, escapeIcs, fold };
+  // The game itself, in the viewer's local time (a "floating" time with no zone), with a reminder two hours before.
+  function buildGameIcs(game, now) {
+    const stamp = (now || new Date()).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    const at = time => compact(game.game_date) + "T" + time.replace(":", "") + "00";
+    return [
+      "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Pickup Poll//Club dates//EN", "CALSCALE:GREGORIAN",
+      "BEGIN:VEVENT", "UID:pickup-poll-game-" + game.game_date + "@local", "DTSTAMP:" + stamp,
+      "DTSTART:" + at(game.kickoff), "DTEND:" + at(game.end_time),
+      fold("SUMMARY:" + escapeIcs(game.club_name)),
+      fold("LOCATION:" + escapeIcs(game.location)),
+      fold("DESCRIPTION:" + escapeIcs(game.notes || "Pickup football")),
+      "BEGIN:VALARM", "TRIGGER:-PT2H", "ACTION:DISPLAY", "DESCRIPTION:Football in two hours", "END:VALARM",
+      "END:VEVENT", "END:VCALENDAR",
+    ].join("\r\n") + "\r\n";
+  }
+
+  const api = { buildIcs, buildGameIcs, escapeIcs, fold };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.PickupIcs = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -28,13 +28,21 @@ ROOT = Path(__file__).resolve().parent
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/styles.css": ("styles.css", "text/css; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/ics.js": ("ics.js", "text/javascript; charset=utf-8")}
+          "/ics.js": ("ics.js", "text/javascript; charset=utf-8"),
+          "/sun.js": ("sun.js", "text/javascript; charset=utf-8"),
+          "/teams.js": ("teams.js", "text/javascript; charset=utf-8")}
 STATUSES = ("going", "maybe", "out")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_BODY = 16_384
 MAX_RSVPS_PER_GAME = 200
 MAX_PERMITS = 50
+DEFAULTS = {"club_name": "Football Not Soccer Club", "kickoff": "16:00", "end_time": "18:00",
+            "location": "Jack McManus Field, 729 Main St, New York, NY 10044", "max_players": "14",
+            "notes": "Pinnies provided. The field has lights. Bring water.",
+            "notice_text": "", "notice_kind": "info", "notice_game": "", "team_seed": "0", "team_seed_game": ""}
+OLD_DEFAULTS = {"club_name": ("Thursday United",), "kickoff": ("18:30",),
+                "location": ("Add your field or meeting point", "Your usual pitch")}
 LOCK_DAYS_BEFORE = 1       # from this many days before the game, spots that are going are locked
 SCHEMA_VERSION = 2
 SAMPLE_NAMES = ("Maya T.", "Chris L.", "Jordan K.", "Alex R.", "Sam P.", "Taylor W.")
@@ -127,9 +135,14 @@ class Store:
             with self.tx() as db:
                 self._create_or_migrate(db)
                 today = self.today()
-                for key, value in {"club_name": "Thursday United", "game_date": next_thursday_on_or_after(today).isoformat(),
-                                   "kickoff": "18:30", "location": "Add your field or meeting point", "max_players": "14"}.items():
+                game_default = next_thursday_on_or_after(today).isoformat()
+                for key, value in {**DEFAULTS, "game_date": game_default}.items():
                     db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value))
+                if not db.execute("SELECT 1 FROM meta WHERE key = 'defaults_v3'").fetchone():
+                    for key, old_values in OLD_DEFAULTS.items():       # replace the first version's placeholders once
+                        for old in old_values:
+                            db.execute("UPDATE settings SET value = ? WHERE key = ? AND value = ?", (DEFAULTS[key], key, old))
+                    db.execute("INSERT INTO meta(key, value) VALUES ('defaults_v3', '1')")
                 if demo:
                     self._seed_demo(db)
         finally:
@@ -150,12 +163,17 @@ class Store:
                 is_sample INTEGER NOT NULL DEFAULT 0,
                 owner_hash TEXT,
                 locked INTEGER NOT NULL DEFAULT 0,
+                waitlisted INTEGER NOT NULL DEFAULT 0,
+                waitlist_at INTEGER,
                 PRIMARY KEY (game_date, name_key)
             )""")
         if "owner_hash" not in {r["name"] for r in db.execute("PRAGMA table_info(rsvps)")}:
             db.execute("ALTER TABLE rsvps ADD COLUMN owner_hash TEXT")
         if "locked" not in {r["name"] for r in db.execute("PRAGMA table_info(rsvps)")}:
             db.execute("ALTER TABLE rsvps ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+        if "waitlisted" not in {r["name"] for r in db.execute("PRAGMA table_info(rsvps)")}:
+            db.execute("ALTER TABLE rsvps ADD COLUMN waitlisted INTEGER NOT NULL DEFAULT 0")
+            db.execute("ALTER TABLE rsvps ADD COLUMN waitlist_at INTEGER")
         db.execute("""CREATE TABLE IF NOT EXISTS permits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -178,7 +196,7 @@ class Store:
         db.execute("DROP TABLE rsvps")
         db.execute("""CREATE TABLE rsvps (game_date TEXT NOT NULL, name_key TEXT NOT NULL, name TEXT NOT NULL,
                       status TEXT NOT NULL CHECK(status IN ('going', 'maybe', 'out')), updated_at TEXT NOT NULL,
-                      is_sample INTEGER NOT NULL DEFAULT 0, owner_hash TEXT, locked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (game_date, name_key))""")
+                      is_sample INTEGER NOT NULL DEFAULT 0, owner_hash TEXT, locked INTEGER NOT NULL DEFAULT 0, waitlisted INTEGER NOT NULL DEFAULT 0, waitlist_at INTEGER, PRIMARY KEY (game_date, name_key))""")
         stamps = {r["updated_at"] for r in old if r["name"] in SAMPLE_NAMES}
         for row in old:
             sample = int(row["name"] in SAMPLE_NAMES and len(stamps) == 1 and row["updated_at"] in stamps)
@@ -223,29 +241,60 @@ class Store:
             settings = self._settings(db)
             game = effective_game_date(settings.get("game_date"), self.today())
             rsvps = [dict(r) for r in db.execute(
-                "SELECT rowid AS seq, name, status, updated_at, is_sample, owner_hash, locked FROM rsvps WHERE game_date = ? ORDER BY "
-                "CASE status WHEN 'going' THEN 0 WHEN 'maybe' THEN 1 ELSE 2 END, name COLLATE NOCASE", (game.isoformat(),))]
+                "SELECT rowid AS seq, name, status, updated_at, is_sample, owner_hash, locked, waitlisted, waitlist_at FROM rsvps "
+                "WHERE game_date = ? ORDER BY "
+                "CASE WHEN status = 'going' AND waitlisted = 0 THEN 0 WHEN status = 'going' THEN 1 WHEN status = 'maybe' THEN 2 ELSE 3 END, "
+                "waitlist_at, name COLLATE NOCASE", (game.isoformat(),))]
             permits = [dict(r) for r in db.execute("SELECT id, title, date, note, is_sample FROM permits ORDER BY date, id")]
             recent = [dict(r) for r in db.execute(
-                "SELECT game_date, SUM(status = 'going') AS going, SUM(status = 'maybe') AS maybe, SUM(status = 'out') AS out "
+                "SELECT game_date, SUM(status = 'going' AND waitlisted = 0) AS going, SUM(status = 'maybe') AS maybe, SUM(status = 'out') AS out "
                 "FROM rsvps WHERE game_date < ? AND is_sample = 0 GROUP BY game_date ORDER BY game_date DESC LIMIT 4", (self.today().isoformat(),))]
         auto = self.auto_locked(game)
         for row in rsvps + permits:
             row["is_sample"] = bool(row["is_sample"])
+        position = 0
         for row in rsvps:
             owner = row.pop("owner_hash")                                   # the hash itself is never sent
             row["mine"] = bool(mine) and owner == mine
             manual = bool(row.pop("locked"))
-            row["locked"] = row["status"] == "going" and not row["is_sample"] and (manual or auto)
+            row["waitlisted"] = bool(row["waitlisted"])
+            row.pop("waitlist_at")
+            row["waitlist_pos"] = None
+            if row["waitlisted"]:
+                position += 1
+                row["waitlist_pos"] = position
+            row["locked"] = row["status"] == "going" and not row["waitlisted"] and not row["is_sample"] and (manual or auto)
             row["lock_kind"] = ("manual" if manual else "auto") if row["locked"] else None
+        here = settings.get("notice_game") == game.isoformat() and settings.get("notice_text")
         return {"today": self.today().isoformat(),
                 "settings": {"club_name": settings["club_name"], "game_date": game.isoformat(), "kickoff": settings["kickoff"],
-                             "location": settings["location"], "max_players": int(settings["max_players"]),
-                             "lock_from": (game - timedelta(days=LOCK_DAYS_BEFORE)).isoformat(), "auto_locked": auto},
+                             "end_time": settings["end_time"], "location": settings["location"], "notes": settings["notes"],
+                             "max_players": int(settings["max_players"]),
+                             "lock_from": (game - timedelta(days=LOCK_DAYS_BEFORE)).isoformat(), "auto_locked": auto,
+                             "team_seed": int(settings["team_seed"]) if settings.get("team_seed_game") == game.isoformat() else 0},
+                "notice": {"text": settings["notice_text"], "kind": settings["notice_kind"]} if here else None,
                 "rsvps": rsvps, "permits": permits, "recent": recent,
                 "has_sample": any(r["is_sample"] for r in rsvps + permits)}
 
     # -- writing --------------------------------------------------------------
+
+    def _cancelled(self, db, game):
+        settings = self._settings(db)
+        return settings.get("notice_game") == game and settings.get("notice_kind") == "cancelled" and bool(settings.get("notice_text"))
+
+    def _promote(self, db, game):
+        """When a spot is free, the person who has waited longest moves up."""
+        limit = int(self._settings(db)["max_players"])
+        while True:
+            taken = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND waitlisted = 0 AND is_sample = 0",
+                               (game,)).fetchone()[0]
+            if taken >= limit:
+                return
+            nxt = db.execute("SELECT name_key FROM rsvps WHERE game_date = ? AND status = 'going' AND waitlisted = 1 "
+                             "ORDER BY waitlist_at LIMIT 1", (game,)).fetchone()
+            if nxt is None:
+                return
+            db.execute("UPDATE rsvps SET waitlisted = 0, waitlist_at = NULL WHERE game_date = ? AND name_key = ?", (game, nxt["name_key"]))
 
     def save_rsvp(self, name, status, token):
         name = clean_text(name, "Your name", 1, 36, "Enter your name (up to 36 characters).")
@@ -255,23 +304,31 @@ class Store:
         key = name_key(name)
         with self.tx() as db:
             game = self._game_date(db).isoformat()
-            row = db.execute("SELECT owner_hash, is_sample, status, locked FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
+            if status != "out" and self._cancelled(db, game):
+                raise PollError("This game is cancelled. Check the update at the top of the page.", 409)
+            row = db.execute("SELECT owner_hash, is_sample, status, locked, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
             if row and row["owner_hash"] and row["owner_hash"] != owner and not row["is_sample"]:
                 raise PollError("That name was added from another device. Use a different name (for example add an initial).", 403)
-            if row and not row["is_sample"] and row["status"] == "going" and status != "going" and (row["locked"] or self.auto_locked(date.fromisoformat(game))):
+            holds_spot = bool(row) and not row["is_sample"] and row["status"] == "going" and not row["waitlisted"]
+            if holds_spot and status != "going" and (row["locked"] or self.auto_locked(date.fromisoformat(game))):
                 raise PollError("Your spot is locked in, so you can no longer drop out. Message the organizer if something has come up.", 409)
             if not row and db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ?", (game,)).fetchone()[0] >= MAX_RSVPS_PER_GAME:
                 raise PollError("This game already has the maximum number of replies.", 409)
-            if status == "going":
+            waitlisted = 0
+            if status == "going" and not holds_spot:
                 limit = int(self._settings(db)["max_players"])
-                taken = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND is_sample = 0 AND name_key != ?",
-                                   (game, key)).fetchone()[0]
-                if taken >= limit:
-                    raise PollError("The squad is full. Check with the organizer about a spot.", 409)
-            db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample, owner_hash) VALUES (?, ?, ?, ?, ?, 0, ?) "
+                taken = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND waitlisted = 0 AND is_sample = 0 "
+                                   "AND name_key != ?", (game, key)).fetchone()[0]
+                waitlisted = int(taken >= limit)
+            stamp = time.time_ns() if waitlisted else None
+            db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample, owner_hash, waitlisted, waitlist_at) "
+                       "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?) "
                        "ON CONFLICT(game_date, name_key) DO UPDATE SET name = excluded.name, status = excluded.status, "
-                       "updated_at = excluded.updated_at, is_sample = 0, owner_hash = COALESCE(rsvps.owner_hash, excluded.owner_hash)",
-                       (game, key, name, status, datetime.now().isoformat(timespec="minutes"), owner))
+                       "updated_at = excluded.updated_at, is_sample = 0, owner_hash = COALESCE(rsvps.owner_hash, excluded.owner_hash), "
+                       "waitlisted = excluded.waitlisted, "
+                       "waitlist_at = CASE WHEN excluded.waitlisted = 1 THEN COALESCE(rsvps.waitlist_at, excluded.waitlist_at) ELSE NULL END",
+                       (game, key, name, status, datetime.now().isoformat(timespec="minutes"), owner, waitlisted, stamp))
+            self._promote(db, game)
 
     def delete_rsvp(self, name, token):
         """Only the browser that added a name can remove it. Nobody can remove anyone else's."""
@@ -287,10 +344,12 @@ class Store:
             if self._is_locked(db, game, name_key(name)):
                 raise PollError("Your spot is locked in, so it can no longer be removed. Message the organizer if something has come up.", 409)
             db.execute("DELETE FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name)))
+            self._promote(db, game)
 
     def _is_locked(self, db, game, key):
-        row = db.execute("SELECT status, locked, is_sample FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
-        return bool(row) and not row["is_sample"] and row["status"] == "going" and bool(row["locked"] or self.auto_locked(date.fromisoformat(game)))
+        row = db.execute("SELECT status, locked, is_sample, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
+        return (bool(row) and not row["is_sample"] and row["status"] == "going" and not row["waitlisted"]
+                and bool(row["locked"] or self.auto_locked(date.fromisoformat(game))))
 
     def lock_rsvp(self, name, token):
         """Lock in your own spot. It cannot be undone by the player."""
@@ -298,14 +357,32 @@ class Store:
         owner = token_hash(token)
         with self.tx() as db:
             game = self._game_date(db).isoformat()
-            row = db.execute("SELECT owner_hash, status, is_sample FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name))).fetchone()
+            row = db.execute("SELECT owner_hash, status, is_sample, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name))).fetchone()
             if row is None:
                 raise PollError("That name is not on the list.", 404)
             if row["owner_hash"] != owner:
                 raise PollError("You can only lock in your own name.", 403)
-            if row["status"] != "going":
-                raise PollError("Only a spot that is going can be locked in.", 409)
+            if row["status"] != "going" or row["waitlisted"]:
+                raise PollError("Only a confirmed spot can be locked in.", 409)
             db.execute("UPDATE rsvps SET locked = 1 WHERE game_date = ? AND name_key = ?", (game, name_key(name)))
+
+    def set_notice(self, text, kind):
+        """An update at the top of the page for this game, such as a cancellation. Empty text clears it."""
+        text = clean_text(text if text is not None else "", "The update", 0, 140, "An update can be up to 140 characters.")
+        if kind not in ("info", "cancelled"):
+            raise PollError("Choose an update type.")
+        if kind == "cancelled" and not text:
+            text = "This game is cancelled."
+        with self.tx() as db:
+            game = self._game_date(db).isoformat()
+            for key, value in (("notice_text", text), ("notice_kind", kind if text else "info"), ("notice_game", game if text else "")):
+                db.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+
+    def shuffle_teams(self):
+        with self.tx() as db:
+            game = self._game_date(db).isoformat()
+            for key, value in (("team_seed", str(secrets.randbelow(2**31 - 1) + 1)), ("team_seed_game", game)):
+                db.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
 
     def add_permit(self, title, permit_date, note):
         title = clean_text(title, "The title", 2, 60, "Give the permit reminder a short title.")
@@ -342,17 +419,31 @@ class Store:
         kickoff = data.get("kickoff")
         if not isinstance(kickoff, str) or not TIME_RE.fullmatch(kickoff):
             raise PollError("Choose a valid kickoff time.")
+        end_time = data.get("end_time")
+        if end_time is not None and (not isinstance(end_time, str) or not TIME_RE.fullmatch(end_time) or end_time <= kickoff):
+            raise PollError("The end time must be a valid time after kickoff.")
+        notes = data.get("notes")
+        if notes is not None:
+            notes = clean_text(notes, "The notes", 0, 200, "Notes can be up to 200 characters.")
         capacity = data.get("max_players")
         if isinstance(capacity, bool) or not isinstance(capacity, int) or not 2 <= capacity <= 40:
             raise PollError("Squad size must be between 2 and 40.")
         with self.tx() as db:
-            going = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND is_sample = 0",
+            going = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND waitlisted = 0 AND is_sample = 0",
                                (chosen.isoformat(),)).fetchone()[0]
             if capacity < going:
                 raise PollError(f"{going} players are already going on that date. Choose a squad size of at least {going}.", 409)
-            for key, value in (("club_name", club), ("location", location), ("game_date", chosen.isoformat()),
-                               ("kickoff", kickoff), ("max_players", str(capacity))):
+            updates = [("club_name", club), ("location", location), ("game_date", chosen.isoformat()),
+                       ("kickoff", kickoff), ("max_players", str(capacity))]
+            if end_time is not None:
+                updates.append(("end_time", end_time))
+            elif self._settings(db)["end_time"] <= kickoff:
+                raise PollError("The end time must be after kickoff.")
+            if notes is not None:
+                updates.append(("notes", notes))
+            for key, value in updates:
                 db.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+            self._promote(db, chosen.isoformat())
 
     def clear_sample(self):
         with self.tx() as db:
@@ -548,9 +639,13 @@ class Handler(BaseHTTPRequestHandler):
                 store.save_rsvp(data.get("name"), data.get("status"), self.headers.get("X-Player-Token"))
             elif path == "/api/lock":
                 store.lock_rsvp(data.get("name"), self.headers.get("X-Player-Token"))
-            elif path in ("/api/unlock", "/api/game", "/api/permits", "/api/clear-sample", "/api/reset-week"):
+            elif path in ("/api/unlock", "/api/game", "/api/permits", "/api/clear-sample", "/api/reset-week", "/api/notice", "/api/shuffle"):
                 self._need_organizer()
-                if path == "/api/game":
+                if path == "/api/notice":
+                    store.set_notice(data.get("text"), data.get("kind", "info"))
+                elif path == "/api/shuffle":
+                    store.shuffle_teams()
+                elif path == "/api/game":
                     store.update_game(data)
                 elif path == "/api/permits":
                     store.add_permit(data.get("title"), data.get("date"), data.get("note"))
