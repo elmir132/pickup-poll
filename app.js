@@ -1,7 +1,6 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 let appState = null;
-let selectedStatus = "going";
 let toastTimer;
 
 function initials(name) {
@@ -128,8 +127,11 @@ async function asOrganizer(action) {
 
 async function loadState(quiet = false) {
   try {
+    const wasWaiting = Boolean(myRow() && myRow().waitlisted);
     appState = await api("/api/state");
     render();
+    const now = myRow();
+    if (wasWaiting && now && now.status === "going" && !now.waitlisted) toast("A spot opened up: you're in!");
     $("body").classList.remove("is-offline");
   } catch (error) {
     $("body").classList.add("is-offline");
@@ -137,16 +139,36 @@ async function loadState(quiet = false) {
   }
 }
 
+const STATUS_WORDS = { going: "Going", maybe: "Maybe", out: "Out" };
+
+function normalName(value) {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+// The row for the name typed in the box, if this browser added it.
+function myRow() {
+  if (!appState) return null;
+  const key = normalName($("#player-name").value);
+  if (!key) return null;
+  return appState.rsvps.find(row => row.mine && normalName(row.name) === key) || null;
+}
+
+function mapsUrl(place) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}`;
+}
+
 function render() {
   if (!appState) return;
   const { settings, rsvps, permits } = appState;
   const real = rsvps.filter(player => !player.is_sample);
-  const going = real.filter(player => player.status === "going");
+  const going = real.filter(player => player.status === "going" && !player.waitlisted);
+  const waiting = real.filter(player => player.waitlisted);
   const maybe = real.filter(player => player.status === "maybe");
   const max = settings.max_players;
   const gameDate = dateAtNoon(settings.game_date);
   const month = new Intl.DateTimeFormat("en-US", { month: "short" }).format(gameDate).toUpperCase();
   const week = isoWeek(gameDate);
+  const cancelled = appState.notice && appState.notice.kind === "cancelled";
 
   $("#week-label").textContent = `WEEK ${week}`;
   $("#match-week").textContent = `WEEK ${week} · OPEN RUN`;
@@ -154,25 +176,30 @@ function render() {
   $("#date-day").textContent = String(gameDate.getDate()).padStart(2, "0");
   $("#match-date-full").textContent = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(gameDate);
   $("#club-name").textContent = settings.club_name;
-  $("#kickoff").textContent = formatTime(settings.kickoff);
-  $("#location").textContent = settings.location;
+  $("#kickoff").textContent = `${formatTime(settings.kickoff)} to ${formatTime(settings.end_time)}`;
+  const place = $("#location");
+  place.textContent = settings.location;
+  place.href = mapsUrl(settings.location);
+  $("#match-notes").textContent = settings.notes || "";
+  $("#match-notes").classList.toggle("hidden", !settings.notes);
+  $("#sun-text").textContent = `Sunset ${window.PickupSun.sunsetLabel(settings.game_date)}`;
+  $("#add-to-calendar").classList.toggle("hidden", cancelled);
   $("#going-count").textContent = going.length;
   $("#max-players").textContent = max;
   $("#maybe-count").textContent = `${maybe.length} maybe${maybe.length === 1 ? "" : "s"}`;
   $("#roster-total").textContent = `${rsvps.length} player${rsvps.length === 1 ? "" : "s"}`;
   $("#demo-note").classList.toggle("hidden", !appState.has_sample);
+  renderNotice(appState.notice);
   renderRecent(appState.recent || []);
-  renderPitch(going);
-  const lockDate = formatDate(settings.lock_from, { weekday: "long", month: "short", day: "numeric" });
-  $("#rsvp-hint").textContent = settings.auto_locked
-    ? "Spots are locked now: if you are in, you are in. You can still sign up if there is room."
-    : `Already on the list? Use the same name to update your answer. Spots lock from ${lockDate}, or sooner if you press Lock in.`;
+  const teams = window.PickupTeams.assignTeams(going, settings.team_seed);
+  renderPitch(teams);
+  renderTeams(teams);
   $("#capacity-track").value = Math.min(going.length, max);
   $("#capacity-track").setAttribute("aria-valuemax", max);
   $("#capacity-track").setAttribute("aria-valuenow", going.length);
-  $("#squad-status-copy").textContent = going.length >= max ? "Squad is full" : `${max - going.length} spots still open`;
+  $("#squad-status-copy").textContent = (going.length >= max ? "Squad is full" : `${max - going.length} spot${max - going.length === 1 ? "" : "s"} still open`)
+    + (waiting.length ? ` · ${waiting.length} on the waitlist` : "");
   $("#footer-date").textContent = `THURSDAY · ${formatDate(settings.game_date, { month: "short", day: "numeric" }).toUpperCase()}`;
-
   const faces = $("#squad-faces");
   faces.replaceChildren();
   going.slice(0, 5).forEach(player => {
@@ -189,18 +216,87 @@ function render() {
     faces.append(extra);
   }
 
+  renderJoin(going.length >= max, cancelled);
   renderRoster(rsvps);
   renderPermits(permits);
 }
 
-// One dot per player who is going: two teams, one half of the pitch each, in the order people joined.
+function renderNotice(notice) {
+  const banner = $("#notice-banner");
+  banner.classList.toggle("hidden", !notice);
+  banner.classList.toggle("is-cancelled", Boolean(notice && notice.kind === "cancelled"));
+  banner.textContent = notice ? notice.text : "";
+}
+
+// The join box: one tap for a returning player, name plus one tap for a new one, and a plain sentence about where you stand.
+function renderJoin(full, cancelled) {
+  const row = myRow();
+  const name = $("#player-name").value.trim();
+  const holdsSpot = Boolean(row && row.status === "going" && !row.waitlisted);
+  $("#join-in-label").textContent = full && !holdsSpot ? "Join the waitlist" : "I'm in";
+  $$(".join-btn").forEach(button => {
+    const status = button.dataset.status;
+    button.classList.toggle("selected", Boolean(row) && row.status === status);
+    button.disabled = Boolean(cancelled) && status !== "out";
+  });
+  const heroLabel = $("#join-hero-label");
+  const hero = $("#join-hero");
+  hero.disabled = Boolean(cancelled);
+  if (cancelled) heroLabel.textContent = "Game cancelled";
+  else if (row && row.status === "going") heroLabel.textContent = row.waitlisted ? `Waitlist #${row.waitlist_pos}` : "You're in";
+  else if (name) heroLabel.textContent = full ? "Join the waitlist" : `I'm in, ${name.split(" ")[0]}`;
+  else heroLabel.textContent = "Add your name";
+
+  const status = $("#join-status");
+  status.replaceChildren();
+  status.classList.toggle("hidden", false);
+  const line = document.createElement("p");
+  line.className = "join-line";
+  const actions = document.createElement("div");
+  actions.className = "join-extra";
+  const addAction = (label, action, extra = {}) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "join-chip";
+    button.dataset.action = action;
+    Object.assign(button.dataset, extra);
+    button.textContent = label;
+    actions.append(button);
+  };
+  if (cancelled) {
+    line.textContent = "This game is cancelled. See the update at the top of the page.";
+  } else if (!row) {
+    line.textContent = full ? "The squad is full. Type your name to join the waitlist: you move up automatically when someone drops out."
+                            : "No account needed. Type your name and tap I'm in.";
+  } else if (row.status === "going" && row.waitlisted) {
+    line.textContent = `You're number ${row.waitlist_pos} on the waitlist. You move up by yourself if someone drops out, and this page will tell you.`;
+  } else if (row.status === "going" && row.locked) {
+    line.textContent = "You're locked in. See you there.";
+    addAction("Add to calendar", "game-calendar");
+  } else if (row.status === "going") {
+    line.textContent = "You're in. See you there.";
+    addAction("Lock in my spot", "lock-rsvp", { name: row.name });
+    addAction("Add to calendar", "game-calendar");
+  } else if (row.status === "maybe") {
+    line.textContent = "You're a maybe. Tap I'm in when you're sure.";
+  } else {
+    line.textContent = "You're out this week. Changed your mind? Tap I'm in.";
+  }
+  status.append(line);
+  if (actions.children.length) status.append(actions);
+
+  const lockDate = formatDate(appState.settings.lock_from, { weekday: "long", month: "short", day: "numeric" });
+  $("#rsvp-hint").textContent = cancelled ? "" : appState.settings.auto_locked
+    ? "Spots are locked now: if you are in, you are in. You can still sign up if there is room."
+    : `Spots lock from ${lockDate}, or sooner if you press Lock in. After that nobody can drop out.`;
+}
+
+// One dot per confirmed player. White and orange pinnies each get one half of the pitch, in a simple formation.
 const TEAM_COLUMNS = [[50], [25, 50, 75], [20, 40, 60, 80], [30, 50, 70]];
 const TEAM_X = [8, 20, 33, 44];
 let renderedDots = null;
 
-function pitchSlot(index) {
-  const team = index % 2;
-  const k = Math.floor(index / 2);
+function pitchSlot(team, k) {
   let x, y, used = 0;
   for (let column = 0; column < TEAM_COLUMNS.length; column += 1) {
     const ys = TEAM_COLUMNS[column];
@@ -212,25 +308,41 @@ function pitchSlot(index) {
     x = 12 + (extra % 5) * 8;
     y = extra % 2 === 0 ? 8 : 92;
   }
-  return { team, left: team === 0 ? x : 100 - x, top: y };
+  return { left: team === 0 ? x : 100 - x, top: y };
 }
 
-function renderPitch(going) {
+function renderPitch(teams) {
   const holder = $("#pitch-dots");
-  const players = going.slice().sort((a, b) => a.seq - b.seq);
   const previous = renderedDots;
-  renderedDots = new Set(players.map(player => player.seq));
+  const all = [...teams.white, ...teams.orange];
+  renderedDots = new Set(all.map(player => player.seq));
   holder.replaceChildren();
-  players.forEach((player, index) => {
-    const slot = pitchSlot(index);
+  [teams.white, teams.orange].forEach((list, team) => list.forEach((player, k) => {
+    const slot = pitchSlot(team, k);
     const dot = document.createElement("span");
-    dot.className = `pitch-dot team-${slot.team}` + (previous && !previous.has(player.seq) ? " pop" : "");
+    dot.className = `pitch-dot team-${team}` + (previous && !previous.has(player.seq) ? " pop" : "");
     dot.style.left = `${slot.left}%`;
     dot.style.top = `${slot.top}%`;
-    dot.title = player.name;
+    dot.title = `${player.name} (${team === 0 ? "white" : "orange"} pinnie)`;
     holder.append(dot);
+  }));
+  $("#pitch-count").textContent = all.length ? `${all.length} on the pitch` : "";
+}
+
+function renderTeams(teams) {
+  const total = teams.white.length + teams.orange.length;
+  $("#teams-panel").classList.toggle("hidden", total < 2);
+  [["white", teams.white], ["orange", teams.orange]].forEach(([id, list]) => {
+    $(`#${id}-count`).textContent = `(${list.length})`;
+    const ol = $(`#${id}-list`);
+    ol.replaceChildren();
+    list.forEach(player => {
+      const li = document.createElement("li");
+      li.textContent = player.name + (player.mine ? " (you)" : "");
+      if (player.mine) li.className = "is-me";
+      ol.append(li);
+    });
   });
-  $("#pitch-count").textContent = players.length ? `${players.length} on the pitch` : "";
 }
 
 function renderRecent(recent) {
@@ -257,9 +369,9 @@ function renderRoster(rsvps) {
     const status = document.createElement("span");
     status.className = "roster-status";
     const dot = document.createElement("span");
-    dot.className = `option-dot ${player.status === "going" ? "going-dot" : player.status === "maybe" ? "maybe-dot" : "out-dot"}`;
+    dot.className = `option-dot ${player.waitlisted ? "maybe-dot" : player.status === "going" ? "going-dot" : player.status === "maybe" ? "maybe-dot" : "out-dot"}`;
     const label = document.createElement("span");
-    label.textContent = (player.status === "going" ? "Going" : player.status === "maybe" ? "Maybe" : "Out") + (player.is_sample ? " · sample" : "");
+    label.textContent = (player.waitlisted ? `Waitlist #${player.waitlist_pos}` : STATUS_WORDS[player.status]) + (player.is_sample ? " · sample" : "");
     status.append(dot, label);
     const remove = document.createElement("button");
     remove.className = "remove-rsvp";
@@ -279,7 +391,7 @@ function renderRoster(rsvps) {
       lock.title = player.lock_kind === "auto" ? "Spots lock automatically one day before the game" : "This player locked in their spot";
       actions.append(lock);
     } else if (player.mine) {
-      if (player.status === "going" && !player.is_sample) {
+      if (player.status === "going" && !player.waitlisted && !player.is_sample) {
         const lockButton = document.createElement("button");
         lockButton.className = "lock-button";
         lockButton.type = "button";
@@ -355,6 +467,8 @@ function openSettings() {
   $("#settings-date").value = settings.game_date;
   $("#settings-date").min = appState.today;
   $("#settings-time").value = settings.kickoff;
+  $("#settings-end").value = settings.end_time;
+  $("#settings-notes").value = settings.notes || "";
   $("#settings-capacity").value = settings.max_players;
   $("#settings-location").value = settings.location;
   $("#settings-dialog").showModal();
@@ -369,6 +483,93 @@ function downloadCalendar(permit) {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   toast("Calendar reminder downloaded.");
+}
+
+function downloadGameCalendar() {
+  if (!appState) return;
+  const content = window.PickupIcs.buildGameIcs(appState.settings);
+  const url = URL.createObjectURL(new Blob([content], { type: "text/calendar;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `football-${appState.settings.game_date}.ics`;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast("Added: open the downloaded file to put it in your calendar.");
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    const box = document.createElement("textarea");        // plain http pages have no clipboard API
+    box.value = text;
+    box.style.position = "fixed";
+    box.style.opacity = "0";
+    document.body.append(box);
+    box.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (copyError) { ok = false; }
+    box.remove();
+    return ok;
+  }
+}
+
+async function invite() {
+  if (!appState) return;
+  const s = appState.settings;
+  const text = `${s.club_name}: ${formatDate(s.game_date, { weekday: "long", month: "long", day: "numeric" })}, ${formatTime(s.kickoff)} to ${formatTime(s.end_time)} at ${s.location}. Are you in?`;
+  const url = `${location.origin}/`;
+  if (navigator.share) {
+    try { await navigator.share({ title: s.club_name, text, url }); return; } catch (error) { if (error.name === "AbortError") return; }
+  }
+  const copied = await copyText(`${text} ${url}`);
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  if (!copied) toast("Could not copy. Select the page address and share it.", true);
+  else toast(local ? "Copied. This link only opens on this computer until the app is hosted." : "Invite copied. Paste it in the group chat.");
+}
+
+function openNoticeDialog() {
+  if (!appState) return;
+  const notice = appState.notice;
+  $("#notice-text").value = notice ? notice.text : "";
+  $("#notice-cancelled").checked = Boolean(notice && notice.kind === "cancelled");
+  $("#notice-dialog").showModal();
+}
+
+async function postNotice(text, kind) {
+  try {
+    const next = await asOrganizer(() => api("/api/notice", { method: "POST", body: JSON.stringify({ text, kind }) }));
+    if (!next) return;
+    appState = next;
+    render();
+    $("#notice-dialog").close();
+    toast(text || kind === "cancelled" ? "Update posted." : "Update removed.");
+  } catch (error) { toast(error.message, true); }
+}
+
+// One tap answers: used by the three buttons, Enter in the name box and the big match-card button.
+async function submitAnswer(status) {
+  const name = $("#player-name").value.trim().replace(/\s+/g, " ");
+  if (!name) {
+    toast("Type your name first.", true);
+    $("#player-name").focus();
+    return;
+  }
+  $$(".join-btn, #join-hero").forEach(button => { button.disabled = true; });
+  try {
+    appState = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status }) });
+    try { localStorage.setItem("pickup-poll-name", name); } catch (error) { /* private mode */ }
+    render();
+    const row = myRow();
+    if (row && row.waitlisted) toast(`You're number ${row.waitlist_pos} on the waitlist.`);
+    else if (status === "going") toast("You're in. See you there.");
+    else if (status === "maybe") toast("Marked as a maybe.");
+    else toast("Got it, you're out this week.");
+  } catch (error) {
+    toast(error.message, true);
+    render();
+  }
 }
 
 function openPermitDialog() {
@@ -401,26 +602,35 @@ document.addEventListener("DOMContentLoaded", () => {
   loadState();
   setInterval(() => loadState(true), 30000);
 
-  $$(".status-option").forEach(button => button.addEventListener("click", () => {
-    selectedStatus = button.dataset.status;
-    $$(".status-option").forEach(option => option.classList.toggle("selected", option === button));
-  }));
-
-  $("#rsvp-form").addEventListener("submit", async event => {
+  $("#rsvp-form").addEventListener("submit", event => {
     event.preventDefault();
-    const name = $("#player-name").value.trim();
-    const submit = $(".submit-rsvp");
-    submit.disabled = true;
+    submitAnswer("going");
+  });
+  $$('.join-btn[data-status="maybe"], .join-btn[data-status="out"]').forEach(button => button.addEventListener("click", () => submitAnswer(button.dataset.status)));
+  $("#player-name").addEventListener("input", () => { if (appState) render(); });
+  $("#join-hero").addEventListener("click", () => {
+    const row = myRow();
+    if (!row && $("#player-name").value.trim()) { submitAnswer("going"); return; }
+    $("#rsvp-form").scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!$("#player-name").value.trim()) $("#player-name").focus();
+  });
+  $("#add-to-calendar").addEventListener("click", downloadGameCalendar);
+  $("#invite").addEventListener("click", invite);
+  $$(".post-notice-trigger").forEach(button => button.addEventListener("click", openNoticeDialog));
+  $("#notice-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const text = $("#notice-text").value.trim();
+    postNotice(text, $("#notice-cancelled").checked ? "cancelled" : "info");
+  });
+  $("#notice-clear").addEventListener("click", () => postNotice("", "info"));
+  $("#shuffle-teams").addEventListener("click", async () => {
     try {
-      appState = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status: selectedStatus }) });
-      localStorage.setItem("pickup-poll-name", name);
+      const next = await asOrganizer(() => api("/api/shuffle", { method: "POST", body: "{}" }));
+      if (!next) return;
+      appState = next;
       render();
-      toast("Your RSVP is on the list.");
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      submit.disabled = false;
-    }
+      toast("Teams shuffled.");
+    } catch (error) { toast(error.message, true); }
   });
 
   $("#permit-form").addEventListener("submit", async event => {
@@ -458,6 +668,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("click", async event => {
     const target = event.target.closest("[data-action]");
     if (!target) return;
+    if (target.dataset.action === "game-calendar") { downloadGameCalendar(); return; }
     if (target.dataset.action === "calendar") {
       const permit = appState?.permits.find(item => String(item.id) === target.dataset.id);
       if (permit) downloadCalendar(permit);

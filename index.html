@@ -8,6 +8,8 @@
   <title>Pickup Poll · Thursday football</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/ics.js" defer></script>
+  <script src="/sun.js" defer></script>
+  <script src="/teams.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -21,7 +23,7 @@
       <a class="nav-link" href="#permits" data-view="permits">Permits</a>
     </nav>
     <div class="topbar-right">
-      <span class="season-pill"><span class="pulse-dot"></span> Autumn season</span>
+      <span class="season-pill" id="sun-pill" title="Approximate sunset at the field"><span class="pulse-dot"></span> <span id="sun-text">Sunset</span></span>
       <button class="icon-button settings-trigger" type="button" aria-label="Edit club and match details" title="Club settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m19.4 13.5 1.1.9-1.4 2.4-1.4-.5a7.9 7.9 0 0 1-1.4.8l-.3 1.5h-2.8l-.3-1.5a7.9 7.9 0 0 1-1.4-.8l-1.4.5-1.4-2.4 1.1-.9a7.3 7.3 0 0 1 0-1.6l-1.1-.9 1.4-2.4 1.4.5a7.9 7.9 0 0 1 1.4-.8l.3-1.5h2.8l.3 1.5a7.9 7.9 0 0 1 1.4.8l1.4-.5 1.4 2.4-1.1.9a7.3 7.3 0 0 1 0 1.6Z"/></svg>
       </button>
@@ -35,16 +37,21 @@
       <button class="demo-note-close" type="button">Clear sample data</button>
     </div>
 
+    <div class="notice-banner hidden" id="notice-banner" role="status"></div>
+
     <section class="intro-row" id="match">
       <div>
         <div class="eyebrow"><span class="eyebrow-line"></span> THURSDAY FOOTBALL · <span id="week-label"></span></div>
         <h1>Who's playing<br class="mobile-break"> this week<span class="title-period">?</span></h1>
         <p class="intro-copy">One quick check-in. A full squad. No last-minute group chat chaos.</p>
       </div>
-      <button class="button button-dark edit-match-trigger" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-        Edit match details
-      </button>
+      <div class="intro-actions">
+        <button class="button button-dark edit-match-trigger" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          Edit match details
+        </button>
+        <button class="button button-quiet post-notice-trigger" type="button">Post an update</button>
+      </div>
     </section>
 
     <section class="match-card" aria-labelledby="match-heading">
@@ -61,11 +68,16 @@
           </div>
         </div>
         <div class="match-meta">
-          <span class="meta-item"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg><span id="kickoff">6:30 PM</span></span>
+          <span class="meta-item"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg><span id="kickoff">4:00 PM</span></span>
           <span class="meta-divider"></span>
-          <span class="meta-item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.2"/></svg><span id="location">Your usual pitch</span></span>
+          <span class="meta-item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.2"/></svg><a id="location" class="map-link" target="_blank" rel="noopener noreferrer" title="Open in Google Maps">Field</a></span>
         </div>
-        <a class="button button-lime" href="#rsvp">Add your name <span aria-hidden="true">↗</span></a>
+        <p class="match-notes" id="match-notes"></p>
+        <div class="match-actions">
+          <button class="button button-lime" id="join-hero" type="button"><span id="join-hero-label">Add your name</span> <span aria-hidden="true">↗</span></button>
+          <button class="button button-ghost" id="add-to-calendar" type="button">Add to calendar</button>
+          <button class="button button-ghost" id="invite" type="button">Invite a friend</button>
+        </div>
       </div>
       <div class="pitch-art" aria-hidden="true">
         <div class="pitch-lines">
@@ -94,17 +106,17 @@
           <div><p class="section-kicker">THE ROLL CALL</p><h2 id="rsvp-heading">Count me in<span class="title-period">.</span></h2></div>
           <span class="mini-count" id="roster-total">6 players</span>
         </div>
-        <form id="rsvp-form" class="rsvp-form">
-          <label class="sr-only" for="player-name">Your name</label>
-          <input id="player-name" name="name" maxlength="36" placeholder="Your name" autocomplete="name" required>
-          <div class="status-select" role="group" aria-label="Your availability">
-            <button class="status-option selected" data-status="going" type="button"><span class="option-dot going-dot"></span>In</button>
-            <button class="status-option" data-status="maybe" type="button"><span class="option-dot maybe-dot"></span>Maybe</button>
-            <button class="status-option" data-status="out" type="button"><span class="option-dot out-dot"></span>Out</button>
+        <form id="rsvp-form" class="join" autocomplete="off">
+          <label class="join-label" for="player-name">Your name</label>
+          <input id="player-name" name="name" maxlength="36" placeholder="First name and initial" autocomplete="name" enterkeyhint="go" required>
+          <div class="join-actions" role="group" aria-label="Your answer">
+            <button class="join-btn join-in" id="join-in" type="submit" data-status="going"><span id="join-in-label">I'm in</span></button>
+            <button class="join-btn" type="button" data-status="maybe">Maybe</button>
+            <button class="join-btn" type="button" data-status="out">Can't make it</button>
           </div>
-          <button class="button button-green submit-rsvp" type="submit">Save RSVP <span aria-hidden="true">→</span></button>
         </form>
-        <p class="form-hint" id="rsvp-hint">Already on the list? Use the same name to update your answer.</p>
+        <div class="join-status" id="join-status" aria-live="polite"></div>
+        <p class="form-hint" id="rsvp-hint"></p>
         <div class="roster-header"><span>PLAYER</span><div><span>STATUS</span><span class="sr-only">Remove player</span></div></div>
         <div class="roster-list" id="roster-list" aria-live="polite"></div>
         <p class="recent-games hidden" id="recent-games"></p>
@@ -124,6 +136,18 @@
         <div class="permit-reminder-note"><span class="reminder-icon">↗</span><span>Tap the bell to add any deadline to your calendar.</span></div>
       </section>
     </div>
+
+    <section class="panel teams-panel hidden" id="teams-panel" aria-labelledby="teams-heading">
+      <div class="panel-heading">
+        <div><p class="section-kicker">PINNIES</p><h2 id="teams-heading">Teams<span class="title-period">.</span></h2></div>
+        <button class="button button-quiet" id="shuffle-teams" type="button">Shuffle teams</button>
+      </div>
+      <div class="teams-grid">
+        <div class="team team-white"><h3><span class="pitch-dot-sample"></span> White pinnies <span id="white-count"></span></h3><ol id="white-list"></ol></div>
+        <div class="team team-orange"><h3><span class="pitch-dot-sample orange"></span> Orange pinnies <span id="orange-count"></span></h3><ol id="orange-list"></ol></div>
+      </div>
+      <p class="form-hint" id="teams-hint">Teams change as people join and are final once the game starts.</p>
+    </section>
 
     <footer class="page-footer">
       <div class="footer-brand"><span class="brand-mark small" aria-hidden="true"><span></span><span></span><span></span><span></span></span> pickup<span class="brand-dot">.</span></div>
@@ -152,7 +176,7 @@
     <form method="dialog" class="dialog-close-row"><button class="dialog-close" aria-label="Close">×</button></form>
     <p class="section-kicker">MAKE IT YOURS</p>
     <h2>Club details<span class="title-period">.</span></h2>
-    <p class="dialog-copy">Set the club name, next Thursday, and how many players fit on your pitch.</p>
+    <p class="dialog-copy">Set the club name, the game day and times, and how many players fit on your pitch.</p>
     <form id="settings-form" class="dialog-form settings-form">
       <label for="settings-club">Club name</label>
       <input id="settings-club" name="club_name" maxlength="48" required>
@@ -160,12 +184,30 @@
       <input id="settings-date" name="game_date" type="date" required>
       <div class="settings-two-col">
         <div><label for="settings-time">Kickoff</label><input id="settings-time" name="kickoff" type="time" required></div>
-        <div><label for="settings-capacity">Squad size</label><input id="settings-capacity" name="max_players" type="number" min="2" max="40" required></div>
+        <div><label for="settings-end">Ends</label><input id="settings-end" name="end_time" type="time" required></div>
       </div>
+      <label for="settings-capacity">Squad size <span>(more players join a waitlist)</span></label>
+      <input id="settings-capacity" name="max_players" type="number" min="2" max="40" required>
+      <label for="settings-notes">Notes for players <span>(optional)</span></label>
+      <input id="settings-notes" name="notes" maxlength="200" placeholder="Pinnies provided. Bring water.">
       <label for="settings-location">Field / meeting point</label>
       <input id="settings-location" name="location" maxlength="100" required>
       <button class="button button-green" type="submit">Save match details <span aria-hidden="true">→</span></button>
       <button class="button-link-danger" id="reset-week" type="button">Clear every reply for this game</button>
+    </form>
+  </dialog>
+
+  <dialog class="app-dialog" id="notice-dialog">
+    <form method="dialog" class="dialog-close-row"><button class="dialog-close" aria-label="Close">×</button></form>
+    <p class="section-kicker">ORGANIZER ONLY</p>
+    <h2>Post an update<span class="title-period">.</span></h2>
+    <p class="dialog-copy">Shown at the top of the page for this game. Use it for rain, a changed field or anything people must know.</p>
+    <form id="notice-form" class="dialog-form">
+      <label for="notice-text">Update <span>(up to 140 characters)</span></label>
+      <input id="notice-text" name="text" maxlength="140" placeholder="e.g. Moved to Pony Field this week">
+      <label class="check-row"><input id="notice-cancelled" name="cancelled" type="checkbox"> This game is cancelled</label>
+      <button class="button button-green" type="submit">Post update <span aria-hidden="true">→</span></button>
+      <button class="button-link-danger" id="notice-clear" type="button">Remove the current update</button>
     </form>
   </dialog>
 
