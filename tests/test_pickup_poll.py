@@ -65,7 +65,8 @@ class Base(unittest.TestCase):
         return self.call("GET", "/api/state")[1]
 
     def game(self, **over):
-        data = {"club_name": "Thursday United", "location": "McManus Field", "game_date": "2026-10-15", "kickoff": "18:30", "max_players": 14}
+        data = {"club_name": "Football Not Soccer Club", "location": "McManus Field", "game_date": "2026-10-15", "kickoff": "16:00",
+                "end_time": "18:00", "notes": "Pinnies provided.", "max_players": 14}
         data.update(over)
         return data
 
@@ -103,16 +104,55 @@ class RsvpTests(Base):
         self.rsvp("<script>alert(1)</script>")
         self.assertEqual(self.state()["rsvps"][0]["name"], "<script>alert(1)</script>")
 
-    def test_the_squad_limit_holds_and_frees_up(self):
+    def test_a_full_squad_puts_the_next_player_on_a_waitlist_who_moves_up_when_a_spot_frees(self):
         self.call("POST", "/api/game", self.game(max_players=3))
         for n in "ABC":
             self.assertEqual(self.rsvp(n)[0], 200)
-        code, body = self.rsvp("D")
-        self.assertEqual((code, "full" in body["error"]), (409, True))
-        self.assertEqual(self.rsvp("A", "going")[0], 200)       # someone already in can confirm again
-        self.rsvp("A", "out")
         self.assertEqual(self.rsvp("D")[0], 200)
-        self.assertEqual(self.rsvp("E", "maybe")[0], 200)       # maybe never takes a spot
+        self.assertEqual(self.rsvp("E")[0], 200)
+        rows = {r["name"]: r for r in self.state()["rsvps"]}
+        self.assertEqual((rows["D"]["waitlisted"], rows["D"]["waitlist_pos"], rows["E"]["waitlist_pos"]), (True, 1, 2))
+        self.assertFalse(rows["A"]["waitlisted"])
+        self.assertEqual(self.rsvp("A", "going")[0], 200)       # someone already in confirming again changes nothing
+        self.rsvp("A", "out")
+        rows = {r["name"]: r for r in self.state()["rsvps"]}
+        self.assertEqual((rows["D"]["waitlisted"], rows["E"]["waitlist_pos"]), (False, 1))       # D moved up, E is next
+        self.assertEqual(self.rsvp("F", "maybe")[0], 200)       # maybe never takes a spot or a waitlist place
+
+    def test_the_waitlist_is_first_come_first_served_and_a_raised_squad_size_promotes(self):
+        self.call("POST", "/api/game", self.game(max_players=2))
+        for n in "ABCDE":
+            self.rsvp(n)
+        self.call("POST", "/api/game", self.game(max_players=4))
+        rows = {r["name"]: r for r in self.state()["rsvps"]}
+        self.assertEqual([rows[n]["waitlisted"] for n in "ABCDE"], [False, False, False, False, True])
+
+    def test_leaving_the_waitlist_and_asking_again_goes_to_the_back(self):
+        self.call("POST", "/api/game", self.game(max_players=2))
+        for n in "ABCD":
+            self.rsvp(n)
+        self.rsvp("C", "maybe")
+        self.rsvp("C", "going")
+        rows = {r["name"]: r["waitlist_pos"] for r in self.state()["rsvps"]}
+        self.assertEqual((rows["D"], rows["C"]), (1, 2))
+
+    def test_removing_a_confirmed_player_promotes_the_first_in_line(self):
+        self.call("POST", "/api/game", self.game(max_players=2))
+        for n in ("A", "B", "C"):
+            self.rsvp(n, headers=as_player(TOKEN_A))
+        self.call("DELETE", "/api/rsvps?name=A", headers=as_player(TOKEN_A))
+        self.assertEqual(sorted((r["name"], r["waitlisted"]) for r in self.state()["rsvps"]), [("B", False), ("C", False)])
+
+    def test_a_waitlisted_player_cannot_lock_and_can_leave_even_in_the_last_day(self):
+        self.call("POST", "/api/game", self.game(max_players=2))
+        for n in ("A", "B"):
+            self.rsvp(n, headers=as_player(TOKEN_A))
+        self.rsvp("W", headers=as_player(TOKEN_B))
+        self.server.poll.store.today = lambda: date(2026, 10, 14)
+        self.assertEqual(self.call("POST", "/api/lock", {"name": "W"}, headers=as_player(TOKEN_B))[0], 409)
+        row = [r for r in self.state()["rsvps"] if r["name"] == "W"][0]
+        self.assertEqual((row["waitlisted"], row["locked"]), (True, False))
+        self.assertEqual(self.rsvp("W", "out", headers=as_player(TOKEN_B))[0], 200)
 
     def test_a_game_cannot_collect_unlimited_replies(self):
         store = self.server.poll.store
@@ -177,7 +217,8 @@ class SampleDataTests(Base):
         self.call("POST", "/api/game", self.game(max_players=2))
         self.assertEqual(self.rsvp("Real One")[0], 200)
         self.assertEqual(self.rsvp("Real Two")[0], 200)
-        self.assertEqual(self.rsvp("Real Three")[0], 409)
+        self.assertEqual(self.rsvp("Real Three")[0], 200)
+        self.assertTrue([r for r in self.state()["rsvps"] if r["name"] == "Real Three"][0]["waitlisted"])
 
     def test_a_sample_player_who_replies_becomes_real(self):
         self.rsvp("Maya T.", "out")
@@ -253,7 +294,7 @@ class RequestSafetyTests(Base):
         self.assertEqual(code, 415)
         code, _ = self.call("POST", "/api/game", raw=json.dumps(self.game(club_name="Hijacked FC")), headers={"Content-Type": "text/plain"})
         self.assertIn(code, (403, 415))
-        self.assertEqual(self.state()["settings"]["club_name"], "Thursday United")
+        self.assertEqual(self.state()["settings"]["club_name"], "Football Not Soccer Club")
 
     def test_requests_from_another_origin_are_refused(self):
         code, _ = self.rsvp("X", headers={**HEADERS, "Origin": "https://evil.example"})
@@ -337,6 +378,98 @@ class PinTests(Base):
     def test_a_short_pin_is_refused(self):
         with self.assertRaises(ValueError):
             pp.make_server(os.path.join(self.tmp, "x"), "127.0.0.1", 0, "12", today=lambda: TODAY)
+
+
+class DetailsTests(Base):
+    def test_a_fresh_install_has_the_real_club_details(self):
+        s = self.state()["settings"]
+        self.assertEqual((s["club_name"], s["kickoff"], s["end_time"], s["max_players"]), ("Football Not Soccer Club", "16:00", "18:00", 14))
+        self.assertIn("Jack McManus Field", s["location"])
+        self.assertIn("lights", s["notes"])
+
+    def test_end_time_and_notes_are_validated_and_saved(self):
+        self.assertEqual(self.call("POST", "/api/game", self.game(end_time="15:00"))[0], 400)          # before kickoff
+        self.assertEqual(self.call("POST", "/api/game", self.game(end_time="16:00"))[0], 400)          # equal to kickoff
+        self.assertEqual(self.call("POST", "/api/game", self.game(end_time="6pm"))[0], 400)
+        self.assertEqual(self.call("POST", "/api/game", self.game(notes="n" * 201))[0], 400)
+        self.assertEqual(self.call("POST", "/api/game", self.game(notes="bad\x00note"))[0], 400)
+        code, body = self.call("POST", "/api/game", self.game(end_time="17:30", notes="Bring a dark shirt."))
+        self.assertEqual((code, body["settings"]["end_time"], body["settings"]["notes"]), (200, "17:30", "Bring a dark shirt."))
+
+    def test_leaving_out_end_time_and_notes_keeps_the_old_values(self):
+        data = self.game()
+        data.pop("end_time"); data.pop("notes")
+        code, body = self.call("POST", "/api/game", data)
+        self.assertEqual((code, body["settings"]["end_time"]), (200, "18:00"))
+
+    def test_the_first_versions_placeholders_are_replaced_once_and_real_choices_are_kept(self):
+        path = os.path.join(self.tmp, "old2")
+        os.makedirs(path)
+        db = sqlite3.connect(os.path.join(path, "pickup-poll.sqlite3"))
+        db.executescript("""
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO settings VALUES ('club_name','Thursday United'),('game_date','2026-10-15'),('kickoff','18:30'),
+                                        ('location','Your usual pitch'),('max_players','14');
+        """)
+        db.commit(); db.close()
+        store = pp.Store(path, lambda: TODAY)
+        store.initialize()
+        s = store.state()["settings"]
+        self.assertEqual((s["club_name"], s["kickoff"]), ("Football Not Soccer Club", "16:00"))
+        store.update_game({"club_name": "My Own Club", "location": "Somewhere", "game_date": "2026-10-15", "kickoff": "18:30",
+                          "end_time": "20:00", "max_players": 14})
+        store.initialize()                                           # a restart must not undo the organizer's edits
+        self.assertEqual(store.state()["settings"]["club_name"], "My Own Club")
+
+
+class NoticeTests(Base):
+    def notice(self, text, kind="info", headers=None):
+        return self.call("POST", "/api/notice", {"text": text, "kind": kind}, headers=headers)
+
+    def test_the_organizer_can_post_and_clear_an_update(self):
+        self.assertEqual(self.state()["notice"], None)
+        code, body = self.notice("Moved to Pony Field")
+        self.assertEqual((code, body["notice"]), (200, {"text": "Moved to Pony Field", "kind": "info"}))
+        self.assertEqual(self.notice("")[1]["notice"], None)
+
+    def test_a_cancellation_stops_new_yes_and_maybe_but_not_out(self):
+        self.rsvp("Maya")
+        self.notice("Cancelled: rain", "cancelled")
+        self.assertEqual(self.state()["notice"]["kind"], "cancelled")
+        code, body = self.rsvp("Chris", "going")
+        self.assertEqual(code, 409)
+        self.assertIn("cancelled", body["error"])
+        self.assertEqual(self.rsvp("Chris", "maybe")[0], 409)
+        self.assertEqual(self.rsvp("Maya", "out")[0], 200)
+
+    def test_cancelling_without_text_uses_a_default_and_a_new_date_forgets_the_update(self):
+        self.assertEqual(self.notice("", "cancelled")[1]["notice"]["text"], "This game is cancelled.")
+        self.call("POST", "/api/game", self.game(game_date="2026-10-22"))
+        self.assertIsNone(self.state()["notice"])
+        self.assertEqual(self.rsvp("Maya")[0], 200)
+
+    def test_updates_are_validated_and_organizer_only(self):
+        self.assertEqual(self.notice("x" * 141)[0], 400)
+        self.assertEqual(self.notice("bad\x00text")[0], 400)
+        self.assertEqual(self.notice("ok", "weird")[0], 400)
+        self.server.poll.security.pin = "4321"
+        self.assertEqual(self.notice("Cancelled", "cancelled")[0], 403)
+        self.assertIsNone(self.state()["notice"])
+
+
+class TeamSeedTests(Base):
+    def test_the_organizer_can_shuffle_and_a_new_date_resets_it(self):
+        self.assertEqual(self.state()["settings"]["team_seed"], 0)
+        code, body = self.call("POST", "/api/shuffle", {})
+        seed = body["settings"]["team_seed"]
+        self.assertEqual(code, 200)
+        self.assertGreater(seed, 0)
+        self.call("POST", "/api/game", self.game(game_date="2026-10-22"))
+        self.assertEqual(self.state()["settings"]["team_seed"], 0)
+
+    def test_shuffling_needs_the_pin_when_there_is_one(self):
+        self.server.poll.security.pin = "4321"
+        self.assertEqual(self.call("POST", "/api/shuffle", {})[0], 403)
 
 
 class OwnershipTests(Base):
@@ -462,7 +595,8 @@ class LockTests(Base):
         self.call("POST", "/api/game", self.game(max_players=2))
         self.rsvp("A"); self.rsvp("B")
         self.server.poll.store.today = lambda: date(2026, 10, 14)
-        self.assertEqual(self.rsvp("C")[0], 409)
+        self.assertEqual(self.rsvp("C")[0], 200)
+        self.assertTrue([r for r in self.state()["rsvps"] if r["name"] == "C"][0]["waitlisted"])
 
     def test_a_new_game_date_starts_unlocked(self):
         self.rsvp("Maya")
@@ -518,6 +652,55 @@ class StorageTests(Base):
         self.assertTrue({"owner_hash", "locked"} <= cols)
         store.initialize()                                  # running the migration twice is harmless
         self.assertEqual(len(store.state()["rsvps"]), 3)
+
+
+def run_node(script, *args):
+    out = subprocess.run(["node", "-e", script, *args], capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class BrowserModuleTests(unittest.TestCase):
+    ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+    def test_sunset_matches_the_expected_times_within_two_minutes(self):
+        got = run_node("""const s=require(process.argv[1]); process.stdout.write(JSON.stringify(
+          ['2026-10-22','2026-11-05','2026-12-21','2027-06-21'].map(d => s.sunsetLabel(d))));""", os.path.join(self.ROOT, "sun.js"))
+        expected = ["6:06 PM", "4:49 PM", "4:30 PM", "8:31 PM"]       # New York local time, standard references
+        def minutes(label):
+            clock, half = label.split()
+            h, m = map(int, clock.split(":"))
+            return (h % 12 + (12 if half == "PM" else 0)) * 60 + m
+        for label, want in zip(got, expected):
+            self.assertLessEqual(abs(minutes(label) - minutes(want)), 2, (label, want))
+
+    def test_teams_are_balanced_repeatable_and_cover_everyone_once(self):
+        result = run_node("""const t=require(process.argv[1]);
+          const ps=Array.from({length:9},(_,i)=>({seq:i+1}));
+          const same=JSON.stringify(t.assignTeams(ps,777))===JSON.stringify(t.assignTeams(ps,777));
+          const plain=t.assignTeams(ps,0), mixed=t.assignTeams(ps,777);
+          process.stdout.write(JSON.stringify({same, plain:[plain.white.length,plain.orange.length], mixed:[mixed.white.length,mixed.orange.length],
+            all:[...mixed.white,...mixed.orange].map(p=>p.seq).sort((a,b)=>a-b), order:plain.white.map(p=>p.seq),
+            reshuffled: JSON.stringify(t.assignTeams(ps,778))!==JSON.stringify(mixed)}));""", os.path.join(self.ROOT, "teams.js"))
+        self.assertTrue(result["same"])
+        self.assertEqual((result["plain"], result["mixed"]), ([5, 4], [5, 4]))
+        self.assertEqual(result["all"], list(range(1, 10)))
+        self.assertEqual(result["order"], [1, 3, 5, 7, 9])               # no seed: alternate in join order
+        self.assertTrue(result["reshuffled"])
+
+    def test_the_game_calendar_file_has_the_times_place_and_a_reminder(self):
+        text = run_node("""const i=require(process.argv[1]);
+          process.stdout.write(JSON.stringify(i.buildGameIcs({game_date:'2026-10-22',kickoff:'16:00',end_time:'18:00',club_name:'Football Not Soccer Club',
+          location:'Jack McManus Field, 729 Main St, New York, NY 10044',notes:'Pinnies; bring water\\r\\nATTACH:http://evil.example'}, new Date('2026-10-13T10:00:00Z'))));""",
+                        os.path.join(self.ROOT, "ics.js"))
+        lines = text.split("\r\n")
+        self.assertIn("DTSTART:20261022T160000", lines)
+        self.assertIn("DTEND:20261022T180000", lines)
+        self.assertIn("SUMMARY:Football Not Soccer Club", lines)
+        self.assertIn("TRIGGER:-PT2H", lines)
+        self.assertTrue(any(line.startswith("LOCATION:Jack McManus Field\\, 729 Main St") for line in lines))
+        self.assertTrue(all(len(line.encode()) <= 75 for line in lines))
+        self.assertFalse(any(line.startswith("ATTACH") for line in lines))
 
 
 class CalendarFileTests(unittest.TestCase):

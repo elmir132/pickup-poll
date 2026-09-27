@@ -20,6 +20,11 @@ Options: `--port`, `--data-dir` (or `PICKUP_POLL_DATA`), `--organizer-pin` (or `
 - **Players** need no account: they type a name and choose In, Maybe or Out. The same name again (any capitalisation or accent form) updates that answer. Each browser keeps a random token, and the server stores only its hash with the name, so **only the browser that added a name can change or remove it**. Nobody can remove or overwrite another person's name, the organizer PIN included. Someone who clears their browser data or switches phone has to use a slightly different name. Each player who is going also appears as a dot on the pitch, one team per half, in the order people joined. "In" stops at the squad size; "Maybe" never takes a spot.
 - **Locking in:** a player who is going can press **Lock in** on their own row, any time. From **one day before the game** (Wednesday for a Thursday game) every going spot locks by itself. A locked spot cannot be removed or changed to Maybe or Out, not even by its owner, so the squad count can be trusted on game day. Late sign-ups are still allowed while there is room, and a Maybe can still leave or become In. Only the organizer clearing the whole game undoes a lock. The one-day rule is the `LOCK_DAYS_BEFORE` constant in `app.py`.
 - **The organizer** edits the match and adds or removes permit dates (and can clear a whole game). On `127.0.0.1` there is no PIN, since only your own computer can reach the page. Once the server is open to the network, those actions need the organizer PIN (asked once per browser tab; five wrong tries lock it for a minute).
+- **Joining is two taps:** type a name and tap **I'm in** (or **Maybe** / **Can't make it**). The browser remembers the name, so next time the big button on the match card says "I'm in, Elmir" and one tap is enough. A sentence under the buttons says where you stand: in, locked in, waitlisted (with your place), maybe or out.
+- **Waitlist:** when the squad is full the button becomes **Join the waitlist**. If a confirmed player drops out (or the squad size is raised), the person who has waited longest moves up by themselves and sees a message. Waitlisted players can leave at any time and are not locked.
+- **Match details:** day, start and end time, field with a Google Maps link, notes for players, and the approximate sunset (computed for Roosevelt Island, accurate to a few minutes). **Add to calendar** downloads the game as an `.ics` file (local time, reminder two hours before); **Invite a friend** shares or copies a message with the link (the link only works for others once the app is hosted).
+- **Updates and cancellation:** the organizer can post a short update at the top of the page ("Moved to Pony Field") or mark the game cancelled, which stops new In and Maybe answers.
+- **Teams:** the confirmed players are split into white and orange pinnies (alternating in join order; the organizer can shuffle). The same split colours the dots on the pitch.
 - **Two tabs:** Matchday (the match, headcount and roll call) and Permits (the dates list). `/#permits` opens the second one directly.
 - **Permit dates** show a countdown and download as an `.ics` file with a reminder one day before.
 - **Sample data** (`--demo`, or what the first version created) is marked "sample", shown faded, never counts toward the squad, and goes away with one button. It is not added again on restart.
@@ -37,11 +42,11 @@ Options: `--port`, `--data-dir` (or `PICKUP_POLL_DATA`), `--organizer-pin` (or `
 python3 -m unittest discover -s tests
 ```
 
-37 tests start the real server on a free port with a fixed date: replies, weekly rollover, sample data, the migration of the first version's database, permits, cross-site and wrong-host requests, rate limits, the PIN and its lockout, file permissions, and the calendar file (with Node, if installed). CI runs them on Python 3.9 and 3.12.
+72 tests start the real server on a free port with a fixed date: replies, weekly rollover, sample data, the migration of the first version's database, permits, cross-site and wrong-host requests, rate limits, the PIN and its lockout, file permissions, and the calendar file (with Node, if installed). CI runs them on Python 3.9 and 3.12.
 
 ## Files
 
-`app.py` server and storage · `index.html`, `styles.css`, `app.js` page · `ics.js` calendar file builder · `data/` created on first run (ignored by git).
+`app.py` server and storage · `index.html`, `styles.css`, `app.js` page · `ics.js` calendar files · `sun.js` sunset time · `teams.js` team split · `data/` created on first run (ignored by git).
 
 ## Notes
 

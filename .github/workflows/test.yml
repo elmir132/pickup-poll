@@ -15,5 +15,5 @@ jobs:
         with:
           node-version: 20
       - run: python -m pip install flake8 && python -m flake8 . --select=E9,F63,F7,F82,F401,F841 --count --show-source
-      - run: node --check app.js && node --check ics.js
+      - run: node --check app.js && node --check ics.js && node --check sun.js && node --check teams.js
       - run: python -W error::ResourceWarning -m unittest discover -s tests
