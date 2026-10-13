@@ -240,6 +240,8 @@ class Store:
         with closing(self.connect()) as db:
             settings = self._settings(db)
             game = effective_game_date(settings.get("game_date"), self.today())
+            cancelled = (settings.get("notice_game") == game.isoformat()
+                         and settings.get("notice_kind") == "cancelled" and bool(settings.get("notice_text")))
             rsvps = [dict(r) for r in db.execute(
                 "SELECT rowid AS seq, name, status, updated_at, is_sample, owner_hash, locked, waitlisted, waitlist_at FROM rsvps "
                 "WHERE game_date = ? ORDER BY "
@@ -263,7 +265,8 @@ class Store:
             if row["waitlisted"]:
                 position += 1
                 row["waitlist_pos"] = position
-            row["locked"] = row["status"] == "going" and not row["waitlisted"] and not row["is_sample"] and (manual or auto)
+            row["locked"] = (not cancelled and row["status"] == "going" and not row["waitlisted"]
+                              and not row["is_sample"] and (manual or auto))
             row["lock_kind"] = ("manual" if manual else "auto") if row["locked"] else None
         here = settings.get("notice_game") == game.isoformat() and settings.get("notice_text")
         return {"today": self.today().isoformat(),
@@ -284,6 +287,8 @@ class Store:
 
     def _promote(self, db, game):
         """When a spot is free, the person who has waited longest moves up."""
+        if self._cancelled(db, game):
+            return
         limit = int(self._settings(db)["max_players"])
         while True:
             taken = db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ? AND status = 'going' AND waitlisted = 0 AND is_sample = 0",
@@ -310,7 +315,7 @@ class Store:
             if row and row["owner_hash"] and row["owner_hash"] != owner and not row["is_sample"]:
                 raise PollError("That name was added from another device. Use a different name (for example add an initial).", 403)
             holds_spot = bool(row) and not row["is_sample"] and row["status"] == "going" and not row["waitlisted"]
-            if holds_spot and status != "going" and (row["locked"] or self.auto_locked(date.fromisoformat(game))):
+            if holds_spot and status != "going" and self._is_locked(db, game, key):
                 raise PollError("Your spot is locked in, so you can no longer drop out. Message the organizer if something has come up.", 409)
             if not row and db.execute("SELECT COUNT(*) FROM rsvps WHERE game_date = ?", (game,)).fetchone()[0] >= MAX_RSVPS_PER_GAME:
                 raise PollError("This game already has the maximum number of replies.", 409)
@@ -325,6 +330,7 @@ class Store:
                        "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?) "
                        "ON CONFLICT(game_date, name_key) DO UPDATE SET name = excluded.name, status = excluded.status, "
                        "updated_at = excluded.updated_at, is_sample = 0, owner_hash = COALESCE(rsvps.owner_hash, excluded.owner_hash), "
+                       "locked = CASE WHEN excluded.status = 'going' THEN rsvps.locked ELSE 0 END, "
                        "waitlisted = excluded.waitlisted, "
                        "waitlist_at = CASE WHEN excluded.waitlisted = 1 THEN COALESCE(rsvps.waitlist_at, excluded.waitlist_at) ELSE NULL END",
                        (game, key, name, status, datetime.now().isoformat(timespec="minutes"), owner, waitlisted, stamp))
@@ -347,6 +353,8 @@ class Store:
             self._promote(db, game)
 
     def _is_locked(self, db, game, key):
+        if self._cancelled(db, game):
+            return False
         row = db.execute("SELECT status, locked, is_sample, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
         return (bool(row) and not row["is_sample"] and row["status"] == "going" and not row["waitlisted"]
                 and bool(row["locked"] or self.auto_locked(date.fromisoformat(game))))
@@ -357,6 +365,8 @@ class Store:
         owner = token_hash(token)
         with self.tx() as db:
             game = self._game_date(db).isoformat()
+            if self._cancelled(db, game):
+                raise PollError("This game is cancelled. Check the update at the top of the page.", 409)
             row = db.execute("SELECT owner_hash, status, is_sample, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name))).fetchone()
             if row is None:
                 raise PollError("That name is not on the list.", 404)
@@ -481,6 +491,29 @@ def local_names(bind_host):
     return names
 
 
+def access_urls(bind_host, port):
+    """Return usable URLs, rather than advertising a wildcard bind address to players."""
+    if bind_host not in ("0.0.0.0", "::", ""):
+        host = f"[{bind_host}]" if ":" in bind_host and not bind_host.startswith("[") else bind_host
+        return [f"http://{host}:{port}"]
+
+    urls = [f"http://127.0.0.1:{port}"]
+    try:
+        addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        addresses = ()
+    ipv4 = set()
+    for address in addresses:
+        try:
+            parsed = ipaddress.ip_address(address[4][0])
+        except ValueError:
+            continue
+        if not parsed.is_loopback and not parsed.is_unspecified and (parsed.is_private or parsed.is_link_local):
+            ipv4.add(str(parsed))
+    urls.extend(f"http://{address}:{port}" for address in sorted(ipv4))
+    return urls
+
+
 class Limiter:
     def __init__(self, limit, window, clock=time.monotonic):
         self.limit, self.window, self.clock, self.hits = limit, window, clock, {}
@@ -558,7 +591,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.poll
 
     def log_message(self, format_string, *args):
-        print("[%s] %s" % (self.log_date_time_string(), format_string % args))
+        # Do not log query strings: the RSVP delete endpoint includes a player's name there.
+        method = getattr(self, "command", "-") or "-"
+        path = re.sub(r"[\x00-\x1f\x7f]", "", urlparse(getattr(self, "path", "")).path)[:120] or "-"
+        status = "-"
+        status_arg = args[3] if len(args) >= 5 else args[1] if len(args) >= 2 else None
+        if status_arg is not None and str(status_arg).isdigit():
+            status = str(status_arg)
+        print("[%s] %s %s %s" % (self.log_date_time_string(), method, path, status))
 
     def _send(self, status, body, content_type="application/json; charset=utf-8"):
         payload = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -719,7 +759,13 @@ def main(argv=None):
     except (ValueError, OSError) as err:
         print(f"pickup-poll: {err}")
         return 1
-    print(f"Pickup Poll is running at http://{args.host}:{args.port}")
+    actual_port = server.server_address[1]
+    urls = access_urls(args.host, actual_port)
+    print("Pickup Poll is running at:")
+    for url in urls:
+        print("  " + url)
+    if args.host in ("0.0.0.0", "::", "") and len(urls) == 1:
+        print("No local network address was detected. Use this computer's Wi-Fi IP on other devices.")
     print(f"Data is stored in {server.poll.store.path} (private to your user). Press Ctrl+C to stop.")
     if server.poll.security.pin is not None:
         print("Organizer PIN: " + ("%s (generated for this run)" % server.poll.security.pin if generated else "set") +

@@ -2,6 +2,8 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 let appState = null;
 let toastTimer;
+let stateRevision = 0;
+let latestStateRead = 0;
 
 function initials(name) {
   return name.trim().split(/\s+/).slice(0, 2).map(part => part[0] || "").join("").toUpperCase();
@@ -126,17 +128,27 @@ async function asOrganizer(action) {
 }
 
 async function loadState(quiet = false) {
+  const requestId = ++latestStateRead;
+  const revision = stateRevision;
   try {
     const wasWaiting = Boolean(myRow() && myRow().waitlisted);
-    appState = await api("/api/state");
-    render();
+    const next = await api("/api/state");
+    if (requestId !== latestStateRead || revision !== stateRevision) return;
+    acceptState(next);
     const now = myRow();
     if (wasWaiting && now && now.status === "going" && !now.waitlisted) toast("A spot opened up: you're in!");
     $("body").classList.remove("is-offline");
   } catch (error) {
+    if (requestId !== latestStateRead || revision !== stateRevision) return;
     $("body").classList.add("is-offline");
     if (!quiet) toast("Could not reach the local app. Is the server still running?", true);
   }
+}
+
+function acceptState(next) {
+  stateRevision += 1;
+  appState = next;
+  render();
 }
 
 const STATUS_WORDS = { going: "Going", maybe: "Maybe", out: "Out" };
@@ -391,7 +403,8 @@ function renderRoster(rsvps) {
       lock.title = player.lock_kind === "auto" ? "Spots lock automatically one day before the game" : "This player locked in their spot";
       actions.append(lock);
     } else if (player.mine) {
-      if (player.status === "going" && !player.waitlisted && !player.is_sample) {
+      if (player.status === "going" && !player.waitlisted && !player.is_sample
+          && !(appState.notice && appState.notice.kind === "cancelled")) {
         const lockButton = document.createElement("button");
         lockButton.className = "lock-button";
         lockButton.type = "button";
@@ -541,8 +554,7 @@ async function postNotice(text, kind) {
   try {
     const next = await asOrganizer(() => api("/api/notice", { method: "POST", body: JSON.stringify({ text, kind }) }));
     if (!next) return;
-    appState = next;
-    render();
+    acceptState(next);
     $("#notice-dialog").close();
     toast(text || kind === "cancelled" ? "Update posted." : "Update removed.");
   } catch (error) { toast(error.message, true); }
@@ -558,9 +570,9 @@ async function submitAnswer(status) {
   }
   $$(".join-btn, #join-hero").forEach(button => { button.disabled = true; });
   try {
-    appState = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status }) });
+    const next = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status }) });
     try { localStorage.setItem("pickup-poll-name", name); } catch (error) { /* private mode */ }
-    render();
+    acceptState(next);
     const row = myRow();
     if (row && row.waitlisted) toast(`You're number ${row.waitlist_pos} on the waitlist.`);
     else if (status === "going") toast("You're in. See you there.");
@@ -597,7 +609,8 @@ document.addEventListener("DOMContentLoaded", () => {
     showView(link.dataset.view);
   }));
   showView(location.hash === "#permits" ? "permits" : "match");
-  const savedName = localStorage.getItem("pickup-poll-name");
+  let savedName = "";
+  try { savedName = localStorage.getItem("pickup-poll-name") || ""; } catch (error) { /* private mode */ }
   if (savedName) $("#player-name").value = savedName;
   loadState();
   setInterval(() => loadState(true), 30000);
@@ -610,7 +623,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#player-name").addEventListener("input", () => { if (appState) render(); });
   $("#join-hero").addEventListener("click", () => {
     const row = myRow();
-    if (!row && $("#player-name").value.trim()) { submitAnswer("going"); return; }
+    if ((!row || row.status !== "going") && $("#player-name").value.trim()) { submitAnswer("going"); return; }
     $("#rsvp-form").scrollIntoView({ behavior: "smooth", block: "center" });
     if (!$("#player-name").value.trim()) $("#player-name").focus();
   });
@@ -627,8 +640,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const next = await asOrganizer(() => api("/api/shuffle", { method: "POST", body: "{}" }));
       if (!next) return;
-      appState = next;
-      render();
+      acceptState(next);
       toast("Teams shuffled.");
     } catch (error) { toast(error.message, true); }
   });
@@ -639,8 +651,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const next = await asOrganizer(() => api("/api/permits", { method: "POST", body: JSON.stringify(Object.fromEntries(form.entries())) }));
       if (!next) return;
-      appState = next;
-      render();
+      acceptState(next);
       $("#permit-dialog").close();
       toast("Permit reminder saved.");
     } catch (error) {
@@ -656,8 +667,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const next = await asOrganizer(() => api("/api/game", { method: "POST", body: JSON.stringify(data) }));
       if (!next) return;
-      appState = next;
-      render();
+      acceptState(next);
       $("#settings-dialog").close();
       toast("Match details updated.");
     } catch (error) {
@@ -677,16 +687,16 @@ document.addEventListener("DOMContentLoaded", () => {
     if (target.dataset.action === "lock-rsvp") {
       if (!confirm("Lock in your spot? After this you cannot remove it or change to Maybe or Out.")) return;
       try {
-        appState = await api("/api/lock", { method: "POST", body: JSON.stringify({ name: target.dataset.name }) });
-        render();
+        const next = await api("/api/lock", { method: "POST", body: JSON.stringify({ name: target.dataset.name }) });
+        acceptState(next);
         toast("You are locked in.");
       } catch (error) { toast(error.message, true); }
       return;
     }
     if (target.dataset.action === "remove-rsvp") {
       try {
-        appState = await api(`/api/rsvps?name=${encodeURIComponent(target.dataset.name)}`, { method: "DELETE" });
-        render();
+        const next = await api(`/api/rsvps?name=${encodeURIComponent(target.dataset.name)}`, { method: "DELETE" });
+        acceptState(next);
         toast("RSVP removed.");
       } catch (error) { toast(error.message, true); }
     }
@@ -694,8 +704,7 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         const next = await asOrganizer(() => api(`/api/permits?id=${encodeURIComponent(target.dataset.id)}`, { method: "DELETE" }));
         if (!next) return;
-        appState = next;
-        render();
+        acceptState(next);
         toast("Reminder removed.");
       } catch (error) { toast(error.message, true); }
     }
@@ -708,8 +717,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const next = await asOrganizer(() => api("/api/clear-sample", { method: "POST", body: "{}" }));
       if (!next) return;
-      appState = next;
-      render();
+      acceptState(next);
       toast("Sample data removed.");
     } catch (error) { toast(error.message, true); }
   });
@@ -718,8 +726,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const next = await asOrganizer(() => api("/api/reset-week", { method: "POST", body: "{}" }));
       if (!next) return;
-      appState = next;
-      render();
+      acceptState(next);
       $("#settings-dialog").close();
       toast("This week's replies were cleared.");
     } catch (error) { toast(error.message, true); }
