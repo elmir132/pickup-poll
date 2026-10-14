@@ -173,6 +173,7 @@ function render() {
   if (!appState) return;
   const { settings, rsvps, permits } = appState;
   const real = rsvps.filter(player => !player.is_sample);
+  const sampleCount = rsvps.length - real.length;
   const going = real.filter(player => player.status === "going" && !player.waitlisted);
   const waiting = real.filter(player => player.waitlisted);
   const maybe = real.filter(player => player.status === "maybe");
@@ -199,7 +200,9 @@ function render() {
   $("#going-count").textContent = going.length;
   $("#max-players").textContent = max;
   $("#maybe-count").textContent = `${maybe.length} maybe${maybe.length === 1 ? "" : "s"}`;
-  $("#roster-total").textContent = `${rsvps.length} player${rsvps.length === 1 ? "" : "s"}`;
+  $("#roster-total").textContent = sampleCount
+    ? `${real.length} ${real.length === 1 ? "reply" : "replies"} · ${sampleCount} sample${sampleCount === 1 ? "" : "s"}`
+    : `${real.length} player${real.length === 1 ? "" : "s"}`;
   $("#demo-note").classList.toggle("hidden", !appState.has_sample);
   renderNotice(appState.notice);
   renderRecent(appState.recent || []);
@@ -458,7 +461,7 @@ function renderPermits(permits) {
     reminder.dataset.id = permit.id;
     reminder.title = "Add to calendar";
     reminder.setAttribute("aria-label", `Add ${permit.title} to calendar`);
-    reminder.textContent = "♧";
+    reminder.innerHTML = "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='4' y='5' width='16' height='15' rx='2'/><path d='M8 3v4M16 3v4M4 10h16M8 14h3'/></svg>";
     const remove = document.createElement("button");
     remove.className = "permit-action delete";
     remove.type = "button";
