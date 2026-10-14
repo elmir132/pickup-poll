@@ -50,35 +50,45 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => element.classList.remove("visible"), 3000);
 }
 
-function celebrateLockIn() {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const host = $("#join-status");
-  if (!host) return;
-
-  const burst = document.createElement("span");
-  burst.className = "lock-celebration";
+function celebrateLockIn(message = "YOU'RE LOCKED IN!") {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const burst = document.createElement("div");
+  burst.className = `lock-celebration${reducedMotion ? " reduced-motion" : ""}`;
   burst.setAttribute("aria-hidden", "true");
-  const pieces = [
-    ["ball", -104, -23, "350deg", 0], ["ball", 103, -32, "-320deg", 65],
-    ["paper", -119, -33, "180deg", 15], ["paper", -88, 19, "-210deg", 70],
-    ["paper", -61, -48, "245deg", 30], ["paper", -35, 33, "-160deg", 95],
-    ["paper", -13, -43, "210deg", 55], ["paper", 12, 35, "-240deg", 110],
-    ["paper", 38, -49, "170deg", 25], ["paper", 63, 28, "-195deg", 80],
-    ["paper", 90, -45, "230deg", 45], ["paper", 120, 20, "-170deg", 100]
-  ];
-  pieces.forEach(([kind, x, y, spin, delay], index) => {
-    const piece = document.createElement("span");
-    piece.className = `lock-celebration-piece ${kind}`;
-    piece.style.setProperty("--x", `${x}px`);
-    piece.style.setProperty("--y", `${y}px`);
-    piece.style.setProperty("--spin", spin);
-    piece.style.animationDelay = `${delay}ms`;
-    if (kind === "ball") piece.textContent = "⚽";
-    else piece.style.setProperty("--piece-color", index % 2 ? "#f2a273" : "#b4d06b");
-    burst.append(piece);
-  });
-  host.append(burst);
-  window.setTimeout(() => burst.remove(), 1700);
+
+  const headline = document.createElement("span");
+  headline.className = "lock-celebration-message";
+  headline.textContent = `⚽ ${message}`;
+  burst.append(headline);
+
+  if (!reducedMotion) {
+    const pieces = [
+      ["ball", -190, -105, "350deg", 0], ["ball", 184, -86, "-320deg", 70],
+      ["ball", -126, 145, "245deg", 120], ["ball", 139, 132, "430deg", 45],
+      ["paper", -210, -35, "180deg", 15], ["paper", -180, 85, "-210deg", 70],
+      ["paper", -150, -145, "245deg", 30], ["paper", -122, 40, "-160deg", 95],
+      ["paper", -92, -88, "210deg", 55], ["paper", -62, 150, "-240deg", 110],
+      ["paper", -34, -165, "170deg", 25], ["paper", -12, 95, "-195deg", 80],
+      ["paper", 15, -126, "230deg", 45], ["paper", 43, 155, "-170deg", 100],
+      ["paper", 72, -73, "200deg", 35], ["paper", 100, 100, "-180deg", 85],
+      ["paper", 132, -143, "245deg", 65], ["paper", 164, 37, "-230deg", 20],
+      ["paper", 205, -28, "175deg", 105], ["paper", 18, 178, "-210deg", 55]
+    ];
+    pieces.forEach(([kind, x, y, spin, delay], index) => {
+      const piece = document.createElement("span");
+      piece.className = `lock-celebration-piece ${kind}`;
+      piece.style.setProperty("--x", `${x}px`);
+      piece.style.setProperty("--y", `${y}px`);
+      piece.style.setProperty("--spin", spin);
+      piece.style.animationDelay = `${delay}ms`;
+      if (kind === "ball") piece.textContent = "⚽";
+      else piece.style.setProperty("--piece-color", ["#f2a273", "#b4d06b", "#d8f36a"][index % 3]);
+      burst.append(piece);
+    });
+  }
+
+  document.body.append(burst);
+  window.setTimeout(() => burst.remove(), reducedMotion ? 1900 : 2300);
 }
 
 // A random token kept in this browser proves which names were added from here. getRandomValues also works on plain http.
@@ -630,6 +640,8 @@ async function submitAnswer(status) {
     $("#player-name").focus();
     return;
   }
+  const currentRow = myRow();
+  const wasGoing = Boolean(currentRow && currentRow.status === "going" && !currentRow.waitlisted);
   $$(".join-btn, #join-hero").forEach(button => { button.disabled = true; });
   try {
     const next = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status }) });
@@ -637,7 +649,10 @@ async function submitAnswer(status) {
     acceptState(next);
     const row = myRow();
     if (row && row.waitlisted) toast(`You're number ${row.waitlist_pos} on the waitlist.`);
-    else if (status === "going") toast("You're in. See you there.");
+    else if (status === "going") {
+      if (!wasGoing) celebrateLockIn("YOU'RE IN!");
+      toast("You're in. See you there.");
+    }
     else if (status === "maybe") toast("Marked as a maybe.");
     else toast("Got it, you're out this week.");
   } catch (error) {

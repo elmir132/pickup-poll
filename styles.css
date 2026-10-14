@@ -341,10 +341,15 @@ body.view-permits .permits-panel.is-empty { min-height: 0; }
 .join-btn.selected { box-shadow: 0 0 0 3px rgba(216,243,106,.9); }
 .join-btn:disabled { opacity: .45; cursor: not-allowed; }
 .join-status { position: relative; margin: 0 0 10px; padding: 12px 14px; border-radius: 11px; background: var(--mint); color: var(--green); font-size: 13px; line-height: 1.45; }
-.lock-celebration { position: absolute; z-index: 2; inset: -8px 0; overflow: visible; pointer-events: none; }
-.lock-celebration-piece { position: absolute; top: 50%; left: 50%; opacity: 0; animation: lock-confetti-burst 1.15s cubic-bezier(.16,.72,.24,1) both; }
+.lock-celebration { position: fixed; z-index: 20; inset: 0; overflow: hidden; pointer-events: none; }
+.lock-celebration-message { position: absolute; top: 22%; left: 50%; transform: translateX(-50%); opacity: 0; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: #143e2e; color: #f7fbe9; padding: 12px 20px; box-shadow: 0 12px 38px rgba(20,62,46,.3); font-size: clamp(15px, 3vw, 21px); font-weight: 800; letter-spacing: .08em; white-space: nowrap; animation: lock-message-pop 2s ease-out both; }
+.lock-celebration-piece { position: absolute; top: 50%; left: 50%; opacity: 0; animation: lock-confetti-burst 1.55s cubic-bezier(.16,.72,.24,1) both; }
 .lock-celebration-piece.paper { width: 6px; height: 10px; border-radius: 2px; background: var(--piece-color); }
 .lock-celebration-piece.ball { font-size: 18px; line-height: 1; animation-name: lock-football-hop; }
+@keyframes lock-message-pop {
+  0%, 100% { opacity: 0; transform: translate(-50%, 8px) scale(.9); }
+  12%, 78% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
 @keyframes lock-confetti-burst {
   0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); }
   14% { opacity: 1; }
@@ -356,6 +361,9 @@ body.view-permits .permits-panel.is-empty { min-height: 0; }
   48% { opacity: 1; transform: translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(.94) rotate(250deg); }
   72% { opacity: 1; transform: translate(calc(-50% + var(--x)),calc(-50% + var(--y) - 9px)) scale(1) rotate(325deg); }
   100% { opacity: 0; transform: translate(calc(-50% + var(--x)),calc(-50% + var(--y) + 24px)) scale(.72) rotate(430deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lock-celebration-message { animation: none !important; opacity: 1; transform: translateX(-50%); }
 }
 .join-line { margin: 0; font-weight: 600; }
 .join-extra { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
