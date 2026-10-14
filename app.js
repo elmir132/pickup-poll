@@ -442,7 +442,21 @@ function renderRoster(rsvps) {
     if (player.locked) {
       const lock = document.createElement("span");
       lock.className = "locked-pill";
-      lock.textContent = "Locked in";
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icon.setAttribute("viewBox", "0 0 16 16");
+      icon.setAttribute("aria-hidden", "true");
+      const shackle = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      shackle.setAttribute("d", "M5 7V5a3 3 0 0 1 6 0v2");
+      const body = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      body.setAttribute("x", "3.5");
+      body.setAttribute("y", "7");
+      body.setAttribute("width", "9");
+      body.setAttribute("height", "7");
+      body.setAttribute("rx", "1.5");
+      icon.append(shackle, body);
+      const label = document.createElement("span");
+      label.textContent = "Locked in";
+      lock.append(icon, label);
       lock.title = player.lock_kind === "auto" ? "Spots lock automatically one day before the game" : "This player locked in their spot";
       actions.append(lock);
     } else if (player.mine) {
