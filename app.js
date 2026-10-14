@@ -618,6 +618,20 @@ function showView(name) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  const themeToggle = $("#theme-toggle");
+  const updateThemeToggle = () => {
+    const dark = document.documentElement.dataset.theme === "dark";
+    const label = `Switch to ${dark ? "light" : "dark"} mode`;
+    themeToggle.setAttribute("aria-label", label);
+    themeToggle.setAttribute("title", label);
+    themeToggle.setAttribute("aria-pressed", String(dark));
+  };
+  updateThemeToggle();
+  themeToggle.addEventListener("click", () => {
+    window.pickupPollTheme.toggle();
+    updateThemeToggle();
+  });
+
   $$(".nav-link").forEach(link => link.addEventListener("click", event => {
     event.preventDefault();
     history.replaceState(null, "", "#" + link.dataset.view);

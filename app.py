@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parent
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+          "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/ics.js": ("ics.js", "text/javascript; charset=utf-8"),
           "/sun.js": ("sun.js", "text/javascript; charset=utf-8"),
