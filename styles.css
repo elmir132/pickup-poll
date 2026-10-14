@@ -326,6 +326,8 @@ body.view-permits .permits-panel.is-empty { min-height: 0; }
 .join-label { font-size: 11px; font-weight: 700; letter-spacing: .6px; color: var(--muted); text-transform: uppercase; }
 .join input { height: 50px; font-size: 16px; padding: 0 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--white); color: var(--ink); width: 100%; box-sizing: border-box; }
 .join input:focus { outline: 2px solid var(--green); outline-offset: 1px; }
+.join input:read-only { background: #f3f6f2; }
+.join-hint { margin: -5px 0 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .join-actions { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 8px; }
 .join-btn { height: 52px; border-radius: 11px; border: 1px solid var(--line); background: var(--white); color: var(--ink); font-size: 14px; font-weight: 700; cursor: pointer; }
 .join-btn:hover:not(:disabled) { background: var(--mint); }

@@ -44,7 +44,7 @@ DEFAULTS = {"club_name": "Football Not Soccer Club", "kickoff": "16:00", "end_ti
 OLD_DEFAULTS = {"club_name": ("Thursday United",), "kickoff": ("18:30",),
                 "location": ("Add your field or meeting point", "Your usual pitch")}
 LOCK_DAYS_BEFORE = 1       # from this many days before the game, spots that are going are locked
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SAMPLE_NAMES = ("Maya T.", "Chris L.", "Jordan K.", "Alex R.", "Sam P.", "Taylor W.")
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -185,6 +185,19 @@ class Store:
             db.execute("ALTER TABLE permits ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0")
             db.execute("UPDATE permits SET is_sample = 1 WHERE note LIKE 'Demo date%'")
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("""CREATE TABLE IF NOT EXISTS player_identities (
+                owner_hash TEXT PRIMARY KEY,
+                name_key TEXT NOT NULL,
+                name TEXT NOT NULL
+            )""")
+        # Preserve a browser's first name from existing replies, including after its reply is removed.
+        legacy_identities = list(db.execute(
+            "SELECT owner_hash, name_key, name FROM rsvps "
+            "WHERE owner_hash IS NOT NULL AND is_sample = 0 ORDER BY rowid"
+        ))
+        for identity in legacy_identities:
+            db.execute("INSERT OR IGNORE INTO player_identities(owner_hash, name_key, name) VALUES (?, ?, ?)",
+                       (identity["owner_hash"], identity["name_key"], identity["name"]))
         db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def _migrate_v1(self, db):
@@ -237,7 +250,12 @@ class Store:
         mine = None
         if token and TOKEN_RE.fullmatch(token):
             mine = hashlib.sha256(token.encode("ascii")).hexdigest()
+        player_name = None
         with closing(self.connect()) as db:
+            if mine:
+                identity = db.execute("SELECT name FROM player_identities WHERE owner_hash = ?", (mine,)).fetchone()
+                if identity:
+                    player_name = identity["name"]
             settings = self._settings(db)
             game = effective_game_date(settings.get("game_date"), self.today())
             cancelled = (settings.get("notice_game") == game.isoformat()
@@ -270,6 +288,7 @@ class Store:
             row["lock_kind"] = ("manual" if manual else "auto") if row["locked"] else None
         here = settings.get("notice_game") == game.isoformat() and settings.get("notice_text")
         return {"today": self.today().isoformat(),
+                "player_name": player_name,
                 "settings": {"club_name": settings["club_name"], "game_date": game.isoformat(), "kickoff": settings["kickoff"],
                              "end_time": settings["end_time"], "location": settings["location"], "notes": settings["notes"],
                              "max_players": int(settings["max_players"]),
@@ -311,6 +330,9 @@ class Store:
             game = self._game_date(db).isoformat()
             if status != "out" and self._cancelled(db, game):
                 raise PollError("This game is cancelled. Check the update at the top of the page.", 409)
+            identity = db.execute("SELECT name_key, name FROM player_identities WHERE owner_hash = ?", (owner,)).fetchone()
+            if identity and identity["name_key"] != key:
+                raise PollError(f"This browser is already registered as {identity['name']}. Use that name for your reply.", 409)
             row = db.execute("SELECT owner_hash, is_sample, status, locked, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
             if row and row["owner_hash"] and row["owner_hash"] != owner and not row["is_sample"]:
                 raise PollError("That name was added from another device. Use a different name (for example add an initial).", 403)
@@ -326,6 +348,11 @@ class Store:
                                    "AND name_key != ?", (game, key)).fetchone()[0]
                 waitlisted = int(taken >= limit)
             stamp = time.time_ns() if waitlisted else None
+            if identity is None:
+                db.execute("INSERT INTO player_identities(owner_hash, name_key, name) VALUES (?, ?, ?)",
+                           (owner, key, name))
+            elif identity["name"] != name:
+                db.execute("UPDATE player_identities SET name = ? WHERE owner_hash = ?", (name, owner))
             db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample, owner_hash, waitlisted, waitlist_at) "
                        "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?) "
                        "ON CONFLICT(game_date, name_key) DO UPDATE SET name = excluded.name, status = excluded.status, "

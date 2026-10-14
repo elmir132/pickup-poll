@@ -148,6 +148,15 @@ async function loadState(quiet = false) {
 function acceptState(next) {
   stateRevision += 1;
   appState = next;
+  const nameInput = $("#player-name");
+  nameInput.readOnly = Boolean(next.player_name);
+  if (next.player_name) {
+    nameInput.value = next.player_name;
+    try { localStorage.setItem("pickup-poll-name", next.player_name); } catch (error) { /* private mode */ }
+    $("#player-name-hint").textContent = "Saved to this browser. You can still change your reply.";
+  } else {
+    $("#player-name-hint").textContent = "One name per browser. You can still change your reply.";
+  }
   render();
 }
 
@@ -282,7 +291,7 @@ function renderJoin(full, cancelled) {
     line.textContent = "This game is cancelled. See the update at the top of the page.";
   } else if (!row) {
     line.textContent = full ? "The squad is full. Type your name to join the waitlist: you move up automatically when someone drops out."
-                            : "No account needed. Type your name and tap I'm in.";
+                            : "No account needed. One name per browser. Type it and tap I'm in.";
   } else if (row.status === "going" && row.waitlisted) {
     line.textContent = `You're number ${row.waitlist_pos} on the waitlist. You move up by yourself if someone drops out, and this page will tell you.`;
   } else if (row.status === "going" && row.locked) {

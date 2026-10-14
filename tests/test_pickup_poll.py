@@ -33,6 +33,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._player_tokens = {}
         self.server, _ = pp.make_server(os.path.join(self.tmp, "data"), "127.0.0.1", 0, self.pin, demo=self.demo, today=lambda: TODAY)
         self.port = self.server.server_address[1]
         thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
@@ -58,7 +59,19 @@ class Base(unittest.TestCase):
         finally:
             conn.close()
 
+    def player_token(self, name):
+        key = pp.name_key(str(name))
+        if key not in self._player_tokens:
+            index = len(self._player_tokens)
+            self._player_tokens[key] = (TOKEN_A, TOKEN_B)[index] if index < 2 else f"test_{index:020d}"
+        return self._player_tokens[key]
+
+    def player_headers(self, name):
+        return as_player(self.player_token(name))
+
     def rsvp(self, name, status="going", **kw):
+        if "headers" not in kw:
+            kw["headers"] = self.player_headers(name)
         return self.call("POST", "/api/rsvps", {"name": name, "status": status}, **kw)
 
     def state(self):
@@ -139,28 +152,29 @@ class RsvpTests(Base):
     def test_removing_a_confirmed_player_promotes_the_first_in_line(self):
         self.call("POST", "/api/game", self.game(max_players=2))
         for n in ("A", "B", "C"):
-            self.rsvp(n, headers=as_player(TOKEN_A))
-        self.call("DELETE", "/api/rsvps?name=A", headers=as_player(TOKEN_A))
+            self.rsvp(n, headers=self.player_headers(n))
+        self.call("DELETE", "/api/rsvps?name=A", headers=self.player_headers("A"))
         self.assertEqual(sorted((r["name"], r["waitlisted"]) for r in self.state()["rsvps"]), [("B", False), ("C", False)])
 
     def test_a_waitlisted_player_cannot_lock_and_can_leave_even_in_the_last_day(self):
         self.call("POST", "/api/game", self.game(max_players=2))
         for n in ("A", "B"):
-            self.rsvp(n, headers=as_player(TOKEN_A))
-        self.rsvp("W", headers=as_player(TOKEN_B))
+            self.rsvp(n, headers=self.player_headers(n))
+        self.rsvp("W", headers=self.player_headers("W"))
         self.server.poll.store.today = lambda: date(2026, 10, 14)
-        self.assertEqual(self.call("POST", "/api/lock", {"name": "W"}, headers=as_player(TOKEN_B))[0], 409)
+        self.assertEqual(self.call("POST", "/api/lock", {"name": "W"}, headers=self.player_headers("W"))[0], 409)
         row = [r for r in self.state()["rsvps"] if r["name"] == "W"][0]
         self.assertEqual((row["waitlisted"], row["locked"]), (True, False))
-        self.assertEqual(self.rsvp("W", "out", headers=as_player(TOKEN_B))[0], 200)
+        self.assertEqual(self.rsvp("W", "out", headers=self.player_headers("W"))[0], 200)
 
     def test_a_game_cannot_collect_unlimited_replies(self):
         store = self.server.poll.store
         for i in range(pp.MAX_RSVPS_PER_GAME):
-            store.save_rsvp(f"player {i}", "maybe", TOKEN_A)
+            name = f"player {i}"
+            store.save_rsvp(name, "maybe", self.player_token(name))
         with self.assertRaises(pp.PollError):
-            store.save_rsvp("one too many", "maybe", TOKEN_A)
-        store.save_rsvp("player 1", "out", TOKEN_A)         # existing players can still change their answer
+            store.save_rsvp("one too many", "maybe", self.player_token("one too many"))
+        store.save_rsvp("player 1", "out", self.player_token("player 1"))         # existing players can still change their answer
 
 
 class WeekTests(Base):
@@ -554,8 +568,8 @@ class LockTests(Base):
         self.rsvp("Maya", headers=as_player(TOKEN_A))
         self.assertEqual(self.lock("Maya", TOKEN_B)[0], 403)
         self.assertEqual(self.lock("Nobody")[0], 404)
-        self.rsvp("Sam", "maybe")
-        self.assertEqual(self.lock("Sam")[0], 409)
+        self.rsvp("Sam", "maybe", headers=as_player(TOKEN_B))
+        self.assertEqual(self.lock("Sam", TOKEN_B)[0], 409)
         self.assertFalse(self.row("Maya")["locked"])
 
     def test_nothing_unlocks_a_spot_for_the_player(self):
@@ -576,7 +590,7 @@ class LockTests(Base):
         self.assertFalse(self.row("Sam")["locked"])                      # a maybe holds no spot
         self.assertEqual(self.call("DELETE", "/api/rsvps?name=Maya", headers=as_player(TOKEN_A))[0], 409)
         self.assertEqual(self.rsvp("Maya", "out")[0], 409)
-        self.assertEqual(self.call("DELETE", "/api/rsvps?name=Sam", headers=as_player(TOKEN_A))[0], 200)      # a maybe can still leave
+        self.assertEqual(self.call("DELETE", "/api/rsvps?name=Sam", headers=self.player_headers("Sam"))[0], 200)      # a maybe can still leave
 
     def test_it_stays_locked_on_game_day(self):
         self.rsvp("Maya")
@@ -586,7 +600,7 @@ class LockTests(Base):
     def test_late_sign_ups_still_work_while_locked_and_can_also_lock_in(self):
         self.rsvp("Maya")
         self.server.poll.store.today = lambda: date(2026, 10, 14)
-        self.assertEqual(self.rsvp("Late Larry", "going", headers=as_player(TOKEN_B))[0], 200)
+        self.assertEqual(self.rsvp("Late Larry", "going", headers=self.player_headers("Late Larry"))[0], 200)
         self.assertEqual(self.rsvp("Sam", "maybe")[0], 200)
         self.assertEqual(self.rsvp("Sam", "going")[0], 200)               # maybe to going is allowed
         self.assertEqual(self.rsvp("Sam", "out")[0], 409)                 # but not back out of it

@@ -108,7 +108,8 @@
         </div>
         <form id="rsvp-form" class="join" autocomplete="off">
           <label class="join-label" for="player-name">Your name</label>
-          <input id="player-name" name="name" maxlength="36" placeholder="First name and initial" autocomplete="name" enterkeyhint="go" required>
+          <input id="player-name" name="name" maxlength="36" placeholder="First name and initial" autocomplete="name" enterkeyhint="go" aria-describedby="player-name-hint" required>
+          <p class="join-hint" id="player-name-hint">One name per browser. You can still change your reply.</p>
           <div class="join-actions" role="group" aria-label="Your answer">
             <button class="join-btn join-in" id="join-in" type="submit" data-status="going"><span id="join-in-label">I'm in</span></button>
             <button class="join-btn" type="button" data-status="maybe">Maybe</button>
