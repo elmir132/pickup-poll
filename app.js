@@ -339,6 +339,7 @@ function renderJoin(full, cancelled) {
     line.textContent = `You're number ${row.waitlist_pos} on the waitlist. You move up by yourself if someone drops out, and this page will tell you.`;
   } else if (row.status === "going" && row.locked) {
     line.textContent = "You're locked in. See you there.";
+    addAction("Replay celebration ⚽", "replay-celebration");
     addAction("Add to calendar", "game-calendar");
   } else if (row.status === "going") {
     line.textContent = "You're in. See you there.";
@@ -782,6 +783,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("click", async event => {
     const target = event.target.closest("[data-action]");
     if (!target) return;
+    if (target.dataset.action === "replay-celebration") { celebrateLockIn(); return; }
     if (target.dataset.action === "game-calendar") { downloadGameCalendar(); return; }
     if (target.dataset.action === "calendar") {
       const permit = appState?.permits.find(item => String(item.id) === target.dataset.id);
