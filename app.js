@@ -50,6 +50,37 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => element.classList.remove("visible"), 3000);
 }
 
+function celebrateLockIn() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const host = $("#join-status");
+  if (!host) return;
+
+  const burst = document.createElement("span");
+  burst.className = "lock-celebration";
+  burst.setAttribute("aria-hidden", "true");
+  const pieces = [
+    ["ball", -104, -23, "350deg", 0], ["ball", 103, -32, "-320deg", 65],
+    ["paper", -119, -33, "180deg", 15], ["paper", -88, 19, "-210deg", 70],
+    ["paper", -61, -48, "245deg", 30], ["paper", -35, 33, "-160deg", 95],
+    ["paper", -13, -43, "210deg", 55], ["paper", 12, 35, "-240deg", 110],
+    ["paper", 38, -49, "170deg", 25], ["paper", 63, 28, "-195deg", 80],
+    ["paper", 90, -45, "230deg", 45], ["paper", 120, 20, "-170deg", 100]
+  ];
+  pieces.forEach(([kind, x, y, spin, delay], index) => {
+    const piece = document.createElement("span");
+    piece.className = `lock-celebration-piece ${kind}`;
+    piece.style.setProperty("--x", `${x}px`);
+    piece.style.setProperty("--y", `${y}px`);
+    piece.style.setProperty("--spin", spin);
+    piece.style.animationDelay = `${delay}ms`;
+    if (kind === "ball") piece.textContent = "⚽";
+    else piece.style.setProperty("--piece-color", index % 2 ? "#f2a273" : "#b4d06b");
+    burst.append(piece);
+  });
+  host.append(burst);
+  window.setTimeout(() => burst.remove(), 1700);
+}
+
 // A random token kept in this browser proves which names were added from here. getRandomValues also works on plain http.
 function playerToken() {
   try {
@@ -718,6 +749,7 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         const next = await api("/api/lock", { method: "POST", body: JSON.stringify({ name: target.dataset.name }) });
         acceptState(next);
+        celebrateLockIn();
         toast("You are locked in.");
       } catch (error) { toast(error.message, true); }
       return;
