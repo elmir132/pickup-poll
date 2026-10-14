@@ -426,8 +426,11 @@ function renderRoster(rsvps) {
 
 function renderPermits(permits) {
   const list = $("#permit-list");
+  const isEmpty = permits.length === 0;
   list.replaceChildren();
-  $("#permit-empty").classList.toggle("hidden", permits.length > 0);
+  $("#permit-empty").classList.toggle("hidden", !isEmpty);
+  $("#permit-reminder-note").classList.toggle("hidden", isEmpty);
+  $(".permits-panel").classList.toggle("is-empty", isEmpty);
   permits.forEach(permit => {
     const card = document.createElement("article");
     card.className = "permit-card";
@@ -713,7 +716,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  $("#add-permit-trigger").addEventListener("click", openPermitDialog);
   $("#add-permit-link").addEventListener("click", openPermitDialog);
   $$(".settings-trigger, .edit-match-trigger").forEach(button => button.addEventListener("click", openSettings));
   $(".demo-note-close").addEventListener("click", async () => {
