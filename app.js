@@ -217,6 +217,8 @@ function render() {
   const going = real.filter(player => player.status === "going" && !player.waitlisted);
   const waiting = real.filter(player => player.waitlisted);
   const maybe = real.filter(player => player.status === "maybe");
+  const canCopySquad = appState.organizer_required && going.length > 0 && going.every(player => player.locked);
+  $("#roster-copy-tools").classList.toggle("hidden", !canCopySquad);
   const max = settings.max_players;
   const gameDate = dateAtNoon(settings.game_date);
   const month = new Intl.DateTimeFormat("en-US", { month: "short" }).format(gameDate).toUpperCase();
@@ -644,6 +646,18 @@ async function submitAnswer(status) {
   }
 }
 
+async function copyLockedSquad() {
+  try {
+    const result = await asOrganizer(() => api("/api/locked-squad", { method: "POST", body: "{}" }));
+    if (!result) return;
+    const names = result.names.join("\n");
+    if (!await copyText(names)) throw new Error("Could not copy the names. Please try again.");
+    toast(`Copied ${result.names.length} locked ${result.names.length === 1 ? "name" : "names"}. Paste into WhatsApp.`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 function openPermitDialog() {
   $("#permit-form").reset();
   $("#permit-date").value = "";
@@ -703,6 +717,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#add-to-calendar").addEventListener("click", downloadGameCalendar);
   $("#invite").addEventListener("click", invite);
+  $("#copy-locked-squad").addEventListener("click", copyLockedSquad);
   $$(".post-notice-trigger").forEach(button => button.addEventListener("click", openNoticeDialog));
   $("#notice-form").addEventListener("submit", event => {
     event.preventDefault();

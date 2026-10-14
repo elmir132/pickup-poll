@@ -125,6 +125,13 @@
         <p class="form-hint" id="rsvp-hint"></p>
         <div class="roster-header"><span>PLAYER</span><div><span>STATUS</span><span class="sr-only">Remove player</span></div></div>
         <div class="roster-list" id="roster-list" aria-live="polite"></div>
+        <div class="roster-copy-tools hidden" id="roster-copy-tools">
+          <span>Locked squad · organizer only</span>
+          <button class="button button-quiet" id="copy-locked-squad" type="button" title="Copy confirmed locked names, one per line, for WhatsApp">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2"/></svg>
+            Copy locked names
+          </button>
+        </div>
         <p class="recent-games hidden" id="recent-games"></p>
         <div class="roster-empty hidden" id="roster-empty">No replies yet. Be the first to claim a spot.</div>
         <div class="panel-footnote"><span class="footnote-star">✳</span> Kickoff is better when the squad shows up.</div>

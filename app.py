@@ -707,6 +707,18 @@ class Handler(BaseHTTPRequestHandler):
                 store.save_rsvp(data.get("name"), data.get("status"), self.headers.get("X-Player-Token"))
             elif path == "/api/lock":
                 store.lock_rsvp(data.get("name"), self.headers.get("X-Player-Token"))
+            elif path == "/api/locked-squad":
+                if self.poll.security.pin is None:
+                    raise PollError("An organizer PIN must be configured to copy the locked squad.", 403)
+                self._need_organizer()
+                roster = store.state()["rsvps"]
+                confirmed = [row for row in roster if row["status"] == "going" and not row["waitlisted"] and not row["is_sample"]]
+                if not confirmed:
+                    raise PollError("There are no confirmed players to copy yet.", 409)
+                if any(not row["locked"] for row in confirmed):
+                    raise PollError("Lock all confirmed spots before copying the squad.", 409)
+                self._send(200, {"names": [row["name"] for row in confirmed]})
+                return
             elif path in ("/api/unlock", "/api/game", "/api/permits", "/api/clear-sample", "/api/reset-week", "/api/notice", "/api/shuffle"):
                 self._need_organizer()
                 if path == "/api/notice":
