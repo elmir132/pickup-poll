@@ -287,7 +287,7 @@ class PermitTests(Base):
 
 class RequestSafetyTests(Base):
     def test_page_files_are_served_with_security_headers(self):
-        for path in ("/", "/app.js", "/ics.js", "/styles.css"):
+        for path in ("/", "/app.js", "/ics.js", "/celebrate.js", "/styles.css"):
             conn = http.client.HTTPConnection("127.0.0.1", self.port)
             conn.request("GET", path)
             resp = conn.getresponse()
@@ -715,6 +715,76 @@ class BrowserModuleTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("LOCATION:Jack McManus Field\\, 729 Main St") for line in lines))
         self.assertTrue(all(len(line.encode()) <= 75 for line in lines))
         self.assertFalse(any(line.startswith("ATTACH") for line in lines))
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class CelebrationTests(unittest.TestCase):
+    """The physics of the lock-in confetti. Drawing needs a browser; the rules of motion do not."""
+    MODULE = os.path.join(os.path.dirname(__file__), "..", "celebrate.js")
+
+    def run_js(self, body):
+        script = "const c = require(process.argv[1]); const seeded = s => () => (s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296;\n" + body
+        out = subprocess.run(["node", "-e", script, self.MODULE], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_a_burst_starts_at_the_button_and_flies_upward_and_outward(self):
+        r = self.run_js("""
+          const ps = c.makeParticles({ count: 200, origin: { x: 300, y: 500 }, rng: seeded(7) });
+          console.log(JSON.stringify({ n: ps.length, atOrigin: ps.every(p => p.x === 300 && p.y === 500),
+            allUp: ps.every(p => p.vy < 0), left: ps.filter(p => p.vx < 0).length, right: ps.filter(p => p.vx > 0).length,
+            speeds: [Math.min(...ps.map(p => Math.hypot(p.vx, p.vy))), Math.max(...ps.map(p => Math.hypot(p.vx, p.vy)))] }));""")
+        self.assertEqual((r["n"], r["atOrigin"], r["allUp"]), (200, True, True))
+        self.assertGreater(r["left"], 40)
+        self.assertGreater(r["right"], 40)                               # a fan, not a single line
+        self.assertGreaterEqual(r["speeds"][0], 419)
+        self.assertLessEqual(r["speeds"][1], 981)
+
+    def test_gravity_pulls_pieces_down_and_everything_disappears_in_time(self):
+        r = self.run_js("""
+          const ps = c.makeParticles({ count: 40, origin: { x: 0, y: 0 }, speed: [0, 0], rng: seeded(3) });
+          c.step(ps, 0.1);
+          const falling = ps.every(p => p.vy > 0 && p.y > 0);
+          let seconds = 0, alive = ps.length;
+          while (alive > 0 && seconds < 10) { alive = c.step(ps, 1 / 60); seconds += 1 / 60; }
+          console.log(JSON.stringify({ falling, seconds, alive }));""")
+        self.assertTrue(r["falling"])
+        self.assertEqual(r["alive"], 0)
+        self.assertLess(r["seconds"], 3.1)                               # the whole effect is over within about three seconds
+
+    def test_delayed_pieces_wait_for_their_turn(self):
+        r = self.run_js("""
+          const ps = c.makeParticles({ count: 10, origin: { x: 50, y: 50 }, delay: 0.5, rng: seeded(5) });
+          c.step(ps, 0.3);
+          const still = ps.every(p => p.x === 50 && p.y === 50);
+          c.step(ps, 0.3);
+          console.log(JSON.stringify({ still, moved: ps.every(p => p.x !== 50 || p.y !== 50) }));""")
+        self.assertTrue(r["still"] and r["moved"])
+
+    def test_pieces_fade_out_smoothly_and_only_at_the_end_of_their_life(self):
+        r = self.run_js("""
+          const p = { age: 0, life: 2 };
+          const at = a => { p.age = a; return c.opacity(p); };
+          console.log(JSON.stringify({ start: at(0), mid: at(1), fading: at(1.6), end: at(2), steps: [at(1.3), at(1.5), at(1.7), at(1.9)] }));""")
+        self.assertEqual((r["start"], r["mid"], r["end"]), (1, 1, 0))
+        self.assertTrue(0 < r["fading"] < 1)
+        self.assertEqual(r["steps"], sorted(r["steps"], reverse=True))
+
+    def test_colours_come_from_the_palette_and_the_light_theme_has_no_pale_pieces(self):
+        r = self.run_js("""
+          const ps = c.makeParticles({ count: 300, origin: { x: 0, y: 0 }, palette: c.PALETTE_LIGHT, rng: seeded(11) });
+          const lum = hex => { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255; };
+          console.log(JSON.stringify({ inPalette: ps.every(p => c.PALETTE_LIGHT.includes(p.color)),
+            lightest: Math.max(...c.PALETTE_LIGHT.map(lum)), usesDark: c.paletteFor("dark") === c.PALETTE, usesLight: c.paletteFor("light") === c.PALETTE_LIGHT,
+            balls: ps.filter(p => p.kind === "ball").length }));""")
+        self.assertTrue(r["inPalette"] and r["usesDark"] and r["usesLight"])
+        self.assertLess(r["lightest"], 0.85)                              # nothing close to white on the cream page
+
+    def test_footballs_are_limited_to_the_number_asked_for(self):
+        r = self.run_js("""
+          const ps = c.makeParticles({ count: 50, origin: { x: 0, y: 0 }, balls: 4, rng: seeded(2) });
+          console.log(JSON.stringify({ balls: ps.filter(p => p.kind === "ball").length, sizes: ps.filter(p => p.kind === "ball").map(p => p.size) }));""")
+        self.assertEqual(r["balls"], 4)
+        self.assertTrue(all(18 <= s <= 24 for s in r["sizes"]))
 
 
 class CalendarFileTests(unittest.TestCase):

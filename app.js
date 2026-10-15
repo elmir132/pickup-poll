@@ -50,45 +50,18 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => element.classList.remove("visible"), 3000);
 }
 
-function celebrateLockIn(message = "YOU'RE LOCKED IN!") {
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const burst = document.createElement("div");
-  burst.className = `lock-celebration${reducedMotion ? " reduced-motion" : ""}`;
-  burst.setAttribute("aria-hidden", "true");
+function centerOf(element) {
+  if (!element || !element.getBoundingClientRect) return null;
+  const box = element.getBoundingClientRect();
+  return box.width || box.height ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : null;
+}
 
-  const headline = document.createElement("span");
-  headline.className = "lock-celebration-message";
-  headline.textContent = `⚽ ${message}`;
-  burst.append(headline);
-
-  if (!reducedMotion) {
-    const pieces = [
-      ["ball", -190, -105, "350deg", 0], ["ball", 184, -86, "-320deg", 70],
-      ["ball", -126, 145, "245deg", 120], ["ball", 139, 132, "430deg", 45],
-      ["paper", -210, -35, "180deg", 15], ["paper", -180, 85, "-210deg", 70],
-      ["paper", -150, -145, "245deg", 30], ["paper", -122, 40, "-160deg", 95],
-      ["paper", -92, -88, "210deg", 55], ["paper", -62, 150, "-240deg", 110],
-      ["paper", -34, -165, "170deg", 25], ["paper", -12, 95, "-195deg", 80],
-      ["paper", 15, -126, "230deg", 45], ["paper", 43, 155, "-170deg", 100],
-      ["paper", 72, -73, "200deg", 35], ["paper", 100, 100, "-180deg", 85],
-      ["paper", 132, -143, "245deg", 65], ["paper", 164, 37, "-230deg", 20],
-      ["paper", 205, -28, "175deg", 105], ["paper", 18, 178, "-210deg", 55]
-    ];
-    pieces.forEach(([kind, x, y, spin, delay], index) => {
-      const piece = document.createElement("span");
-      piece.className = `lock-celebration-piece ${kind}`;
-      piece.style.setProperty("--x", `${x}px`);
-      piece.style.setProperty("--y", `${y}px`);
-      piece.style.setProperty("--spin", spin);
-      piece.style.animationDelay = `${delay}ms`;
-      if (kind === "ball") piece.textContent = "⚽";
-      else piece.style.setProperty("--piece-color", ["#f2a273", "#b4d06b", "#d8f36a"][index % 3]);
-      burst.append(piece);
-    });
-  }
-
-  document.body.append(burst);
-  window.setTimeout(() => burst.remove(), reducedMotion ? 1900 : 2300);
+// The confetti starts at the button that was pressed. `origin` is read before the page redraws and removes that button.
+function celebrate(title, { origin = null, big = true } = {}) {
+  const s = appState && appState.settings;
+  const subtitle = s ? `${formatDate(s.game_date, { weekday: "short", month: "short", day: "numeric" })} · ${formatTime(s.kickoff)} · ${s.location.split(",")[0]}` : "";
+  const onScreen = origin && origin.x >= 0 && origin.x <= window.innerWidth && origin.y >= 0 && origin.y <= window.innerHeight;
+  window.PickupCelebrate.celebrate({ title, subtitle, origin: onScreen ? origin : null, big });
 }
 
 // A random token kept in this browser proves which names were added from here. getRandomValues also works on plain http.
@@ -643,6 +616,7 @@ async function submitAnswer(status) {
   }
   const currentRow = myRow();
   const wasGoing = Boolean(currentRow && currentRow.status === "going" && !currentRow.waitlisted);
+  const joinOrigin = centerOf($("#join-in"));
   $$(".join-btn, #join-hero").forEach(button => { button.disabled = true; });
   try {
     const next = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status }) });
@@ -651,7 +625,7 @@ async function submitAnswer(status) {
     const row = myRow();
     if (row && row.waitlisted) toast(`You're number ${row.waitlist_pos} on the waitlist.`);
     else if (status === "going") {
-      if (!wasGoing) celebrateLockIn("YOU'RE IN!");
+      if (!wasGoing) celebrate("You're in", { origin: joinOrigin, big: false });
       toast("You're in. See you there.");
     }
     else if (status === "maybe") toast("Marked as a maybe.");
@@ -783,7 +757,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("click", async event => {
     const target = event.target.closest("[data-action]");
     if (!target) return;
-    if (target.dataset.action === "replay-celebration") { celebrateLockIn(); return; }
+    if (target.dataset.action === "replay-celebration") { celebrate("You're locked in", { origin: centerOf(target) }); return; }
     if (target.dataset.action === "game-calendar") { downloadGameCalendar(); return; }
     if (target.dataset.action === "calendar") {
       const permit = appState?.permits.find(item => String(item.id) === target.dataset.id);
@@ -792,10 +766,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (target.dataset.action === "lock-rsvp") {
       if (!confirm("Lock in your spot? After this you cannot remove it or change to Maybe or Out.")) return;
+      const origin = centerOf(target);                    // the button disappears when the page redraws
       try {
         const next = await api("/api/lock", { method: "POST", body: JSON.stringify({ name: target.dataset.name }) });
         acceptState(next);
-        celebrateLockIn();
+        celebrate("You're locked in", { origin });
         toast("You are locked in.");
       } catch (error) { toast(error.message, true); }
       return;

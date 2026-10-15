@@ -31,7 +31,8 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/ics.js": ("ics.js", "text/javascript; charset=utf-8"),
           "/sun.js": ("sun.js", "text/javascript; charset=utf-8"),
-          "/teams.js": ("teams.js", "text/javascript; charset=utf-8")}
+          "/teams.js": ("teams.js", "text/javascript; charset=utf-8"),
+          "/celebrate.js": ("celebrate.js", "text/javascript; charset=utf-8")}
 STATUSES = ("going", "maybe", "out")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
