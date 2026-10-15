@@ -34,7 +34,8 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self._player_tokens = {}
-        self.server, _ = pp.make_server(os.path.join(self.tmp, "data"), "127.0.0.1", 0, self.pin, demo=self.demo, today=lambda: TODAY)
+        self.server, _ = pp.make_server(os.path.join(self.tmp, "data"), "127.0.0.1", 0, self.pin, demo=self.demo, today=lambda: TODAY,
+                                       trust_proxy=getattr(self, "trust_proxy", False))
         self.port = self.server.server_address[1]
         thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         thread.start()
@@ -484,6 +485,62 @@ class TeamSeedTests(Base):
     def test_shuffling_needs_the_pin_when_there_is_one(self):
         self.server.poll.security.pin = "4321"
         self.assertEqual(self.call("POST", "/api/shuffle", {})[0], 403)
+
+
+class ProxyTests(Base):
+    """Behind a tunnel every request comes from this computer, so visitors are told apart by the proxy's own header."""
+    pin = "4321"
+    trust_proxy = True
+
+    def wrong_pin(self, visitor, pin="0000"):
+        headers = as_player(TOKEN_A, **{"X-Organizer-Pin": pin, "CF-Connecting-IP": visitor})
+        return self.call("POST", "/api/game", self.game(), headers=headers)[0]
+
+    def test_one_visitors_wrong_pins_do_not_lock_everyone_else_out(self):
+        codes = [self.wrong_pin("203.0.113.5") for _ in range(5)]
+        self.assertEqual(codes, [403, 403, 403, 403, 429])
+        self.assertEqual(self.wrong_pin("203.0.113.5", "4321"), 429)             # that visitor is locked out, even with the right PIN
+        self.assertEqual(self.wrong_pin("203.0.113.9", "4321"), 200)             # the organizer, on another connection, is not
+
+    def test_the_write_limit_is_per_visitor_too(self):
+        codes = [self.call("POST", "/api/rsvps", {"name": f"p{i}", "status": "out"}, headers=as_player(TOKEN_A, **{"CF-Connecting-IP": "198.51.100.1"}))[0]
+                 for i in range(125)]
+        self.assertEqual(codes.count(429), 5)
+        other = self.call("POST", "/api/rsvps", {"name": "fresh", "status": "out"}, headers=as_player(TOKEN_B, **{"CF-Connecting-IP": "198.51.100.2"}))
+        self.assertEqual(other[0], 200)
+
+    def test_a_made_up_header_value_falls_back_to_the_real_address(self):
+        codes = [self.wrong_pin(value) for value in ("not-an-ip", "", "999.1.1.1", "x" * 50, "also bad")]
+        self.assertEqual(codes, [403, 403, 403, 403, 429])                       # all counted against the one real address
+
+    def test_x_forwarded_for_is_used_when_there_is_no_cloudflare_header(self):
+        headers = lambda ip: as_player(TOKEN_A, **{"X-Organizer-Pin": "0000", "X-Forwarded-For": f"{ip}, 10.0.0.1"})
+        codes = [self.call("POST", "/api/game", self.game(), headers=headers("203.0.113.7"))[0] for _ in range(5)]
+        self.assertEqual(codes[-1], 429)
+        self.assertEqual(self.call("POST", "/api/game", self.game(), headers=as_player(TOKEN_A, **{"X-Organizer-Pin": "4321", "X-Forwarded-For": "203.0.113.8"}))[0], 200)
+
+
+class ProxyOffTests(Base):
+    pin = "4321"
+
+    def test_without_the_flag_the_header_is_ignored_so_it_cannot_be_used_to_dodge_the_lockout(self):
+        codes = []
+        for i in range(5):
+            headers = as_player(TOKEN_A, **{"X-Organizer-Pin": "0000", "CF-Connecting-IP": f"203.0.113.{i + 10}"})
+            codes.append(self.call("POST", "/api/game", self.game(), headers=headers)[0])
+        self.assertEqual(codes, [403, 403, 403, 403, 429])                       # five different claimed addresses, one real one
+
+
+class ProxySafetyTests(unittest.TestCase):
+    def test_trusting_a_proxy_needs_the_local_address_and_a_pin(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with self.assertRaisesRegex(ValueError, "127.0.0.1"):
+            pp.make_server(tmp, "0.0.0.0", 0, "4321", trust_proxy=True)           # anyone on the network could forge the header
+        with self.assertRaisesRegex(ValueError, "organizer-pin"):
+            pp.make_server(tmp, "127.0.0.1", 0, None, trust_proxy=True)
+        server, _ = pp.make_server(tmp, "127.0.0.1", 0, "4321", trust_proxy=True)
+        server.server_close()
 
 
 class OwnershipTests(Base):

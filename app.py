@@ -603,8 +603,8 @@ class Security:
 
 
 class PollApp:
-    def __init__(self, store, security):
-        self.store, self.security = store, security
+    def __init__(self, store, security, trust_proxy=False):
+        self.store, self.security, self.trust_proxy = store, security, trust_proxy
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +645,20 @@ class Handler(BaseHTTPRequestHandler):
     def _fail(self, err):
         self._send(err.status, {"error": str(err)})
 
+    def client_ip(self):
+        """Who is asking. Behind a tunnel or proxy every request comes from this computer, so the proxy's own header
+        (Cloudflare sends CF-Connecting-IP) is used when --trust-proxy is on. Without that flag the header is ignored,
+        because anyone could write it."""
+        if self.poll.trust_proxy:
+            claimed = (self.headers.get("CF-Connecting-IP") or "").strip()
+            if not claimed:
+                claimed = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            try:
+                return str(ipaddress.ip_address(claimed))
+            except ValueError:
+                pass
+        return self.client_address[0]
+
     def _check_host(self):
         if not self.poll.security.host_allowed(self.headers.get("Host")):
             raise PollError("This address is not allowed. Open the page using the address printed when the server started.", 421)
@@ -659,11 +673,11 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and urlparse(origin).netloc.lower() != (self.headers.get("Host") or "").lower():
             raise PollError("Requests from other sites are not allowed.", 403)
-        if not self.poll.security.writes.allow(self.client_address[0]):
+        if not self.poll.security.writes.allow(self.client_ip()):
             raise PollError("Too many changes in a short time. Wait a minute.", 429)
 
     def _need_organizer(self):
-        self.poll.security.check_pin(self.client_address[0], self.headers.get("X-Organizer-Pin"))
+        self.poll.security.check_pin(self.client_ip(), self.headers.get("X-Organizer-Pin"))
 
     def _json_body(self):
         if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
@@ -770,10 +784,15 @@ class Handler(BaseHTTPRequestHandler):
     do_PUT = do_PATCH = do_OPTIONS = do_HEAD = _method_not_allowed
 
 
-def make_server(data_dir, host="127.0.0.1", port=8787, pin=None, extra_hosts=(), demo=False, today=date.today):
+def make_server(data_dir, host="127.0.0.1", port=8787, pin=None, extra_hosts=(), demo=False, today=date.today, trust_proxy=False):
     """Build the server. A PIN is required when the server can be reached from other devices;
     one is generated if none is given. Returns (server, pin_was_generated)."""
     generated = False
+    if trust_proxy and not is_loopback(host):
+        raise ValueError("--trust-proxy is only safe when the server listens on this computer only (127.0.0.1), "
+                         "so that nothing but your tunnel or proxy can reach it.")
+    if trust_proxy and pin is None:
+        raise ValueError("--trust-proxy means the app is reachable from the internet, so --organizer-pin is required.")
     if pin is None and not is_loopback(host):
         pin, generated = "".join(secrets.choice("0123456789") for _ in range(6)), True
     if pin is not None and len(pin) < 4:
@@ -782,7 +801,7 @@ def make_server(data_dir, host="127.0.0.1", port=8787, pin=None, extra_hosts=(),
     store.initialize(demo)
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
-    server.poll = PollApp(store, Security(host, pin, extra_hosts))
+    server.poll = PollApp(store, Security(host, pin, extra_hosts), trust_proxy)
     return server, generated
 
 
@@ -793,10 +812,11 @@ def main(argv=None):
     parser.add_argument("--data-dir", default=os.environ.get("PICKUP_POLL_DATA", str(ROOT / "data")), help="where the database lives")
     parser.add_argument("--organizer-pin", default=os.environ.get("PICKUP_POLL_PIN"), help="PIN for organizer actions (or set PICKUP_POLL_PIN)")
     parser.add_argument("--allow-host", action="append", default=[], metavar="NAME", help="an extra host name this server may answer to")
+    parser.add_argument("--trust-proxy", action="store_true", help="read the visitor's address from the tunnel or proxy (needs 127.0.0.1 and a PIN)")
     parser.add_argument("--demo", action="store_true", help="fill an empty database with clearly marked sample players and dates")
     args = parser.parse_args(argv)
     try:
-        server, generated = make_server(args.data_dir, args.host, args.port, args.organizer_pin, args.allow_host, args.demo)
+        server, generated = make_server(args.data_dir, args.host, args.port, args.organizer_pin, args.allow_host, args.demo, trust_proxy=args.trust_proxy)
     except (ValueError, OSError) as err:
         print(f"pickup-poll: {err}")
         return 1

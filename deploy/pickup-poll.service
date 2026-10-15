@@ -1,0 +1,19 @@
+[Unit]
+Description=Pickup Poll
+After=network.target
+
+[Service]
+User=pickup
+WorkingDirectory=/opt/pickup-poll
+EnvironmentFile=/etc/pickup-poll.env
+ExecStart=/usr/bin/python3 /opt/pickup-poll/app.py --host 127.0.0.1 --port 8787 --data-dir /var/lib/pickup-poll --allow-host ${POLL_HOST} --trust-proxy
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/pickup-poll
+
+[Install]
+WantedBy=multi-user.target

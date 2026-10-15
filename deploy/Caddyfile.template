@@ -1,0 +1,7 @@
+# Caddy gets the HTTPS certificate by itself. The app only listens on 127.0.0.1, so only Caddy can reach it.
+# The CF-Connecting-IP header is removed because anyone could forge it; the app then uses X-Forwarded-For,
+# which Caddy sets to the real visitor address.
+POLL_HOST_PLACEHOLDER {
+	request_header -CF-Connecting-IP
+	reverse_proxy 127.0.0.1:8787
+}
