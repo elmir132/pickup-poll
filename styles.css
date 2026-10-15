@@ -509,3 +509,7 @@ body.view-permits .teams-panel { display: none; }
 :root[data-theme="dark"] button:focus-visible,
 :root[data-theme="dark"] a:focus-visible,
 :root[data-theme="dark"] input:focus-visible { outline: 2px solid #b4d06b; outline-offset: 2px; }
+
+.demo-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: #fbf4d6; border: 1px solid #ecd98a; color: #5c4a05; font-size: 12px; line-height: 1.4; }
+.demo-banner a { color: inherit; font-weight: 700; }
+:root[data-theme="dark"] .demo-banner { background: #292916; border-color: #514b2c; color: #e5dca9; }

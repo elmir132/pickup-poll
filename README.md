@@ -36,6 +36,12 @@ Options: `--port`, `--data-dir` (or `PICKUP_POLL_DATA`), `--organizer-pin` (or `
 - The page shows everything as text, with a strict Content-Security-Policy. The database and its folder are private to your user.
 - **Not included:** per-player accounts or verified identities. The one-name rule applies to a browser token; a person can use another device or clear browser data to submit a different name. Anyone who can open the page can add a name for someone else who has not answered yet. Use it with a club you trust, on a trusted network. It speaks plain HTTP, so on shared Wi-Fi the PIN can be seen by others on that network. Do not expose it to the internet without HTTPS in front.
 
+## Public demo
+
+A static demo runs on GitHub Pages at **https://elmirabd.me/pickup-poll/** (the folder `docs/`). GitHub Pages cannot run the Python server, so `demo.js` answers the page's `/api/` calls inside the browser, with the same rules as the real server: the squad limit and waitlist, locking in (and the automatic lock the day before), one name per browser, cancel updates, teams and the permits list. The other players are made up, nothing is saved or sent anywhere, and the state lives in your tab (a reload keeps it, a new tab starts over). A banner on the page says so. A test checks that the demo returns the same data shape as the real server, so the two cannot drift apart.
+
+To rebuild the site after changing the page: `python3 scripts/build_demo.py`, then commit `docs/`. A test fails if `docs/` is out of date. To turn it on: repository Settings, Pages, deploy from the `main` branch and the `/docs` folder.
+
 ## Tests
 
 ```bash
@@ -46,7 +52,7 @@ python3 -m unittest discover -s tests
 
 ## Files
 
-`app.py` server and storage · `index.html`, `styles.css`, `app.js` page · `ics.js` calendar files · `sun.js` sunset time · `teams.js` team split · `data/` created on first run (ignored by git).
+`app.py` server and storage · `demo.js` the in-browser stand-in for the server (website only) · `scripts/build_demo.py` builds `docs/` · `index.html`, `styles.css`, `app.js` page · `ics.js` calendar files · `sun.js` sunset time · `teams.js` team split · `data/` created on first run (ignored by git).
 
 ## Notes
 

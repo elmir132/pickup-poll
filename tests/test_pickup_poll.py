@@ -787,6 +787,174 @@ class CelebrationTests(unittest.TestCase):
         self.assertTrue(all(18 <= s <= 24 for s in r["sizes"]))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class DemoModeTests(unittest.TestCase):
+    """demo.js stands in for the server on the static website. It must follow the same rules and return the same data shape."""
+    MODULE = os.path.join(os.path.dirname(__file__), "..", "demo.js")
+
+    def run_js(self, body):
+        script = ("const { DemoServer } = require(process.argv[1]);\n"
+                  "const day = (m, d) => () => new Date(2026, m - 1, d);\n"
+                  "const call = (s, method, path, body, q) => s.handle(method, path, new URLSearchParams(q || {}), body);\n" + body)
+        out = subprocess.run(["node", "-e", script, self.MODULE], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_the_demo_starts_with_made_up_players_and_a_game_a_few_days_away(self):
+        r = self.run_js("""
+          const s = new DemoServer({ today: day(10, 14) });
+          const st = call(s, "GET", "/api/state").body;
+          console.log(JSON.stringify({ date: st.settings.game_date, locked: st.settings.auto_locked, n: st.rsvps.length,
+            going: st.rsvps.filter(r => r.status === "going").length, mine: st.rsvps.some(r => r.mine), sample: st.has_sample, name: st.player_name }));""")
+        self.assertEqual(r["date"], "2026-10-22")                               # a Thursday, at least three days after "today"
+        self.assertEqual((r["locked"], r["n"], r["going"], r["mine"], r["sample"], r["name"]), (False, 15, 12, False, False, None))
+
+    def test_joining_locking_and_the_one_name_per_browser_rule(self):
+        r = self.run_js("""
+          const s = new DemoServer({ today: day(10, 14) });
+          const join = (n, st) => call(s, "POST", "/api/rsvps", { name: n, status: st || "going" });
+          const a = join("Visitor One");
+          const other = join("Someone Else");
+          const fresh = new DemoServer({ today: day(10, 14) });
+          const taken = call(fresh, "POST", "/api/rsvps", { name: "Maya T.", status: "going" });      // a visitor who has not joined yet
+          const lock = call(s, "POST", "/api/lock", { name: "Visitor One" });
+          const drop = join("Visitor One", "out");
+          const remove = call(s, "DELETE", "/api/rsvps", null, { name: "Visitor One" });
+          const mine = lock.body.rsvps.find(r => r.mine);
+          console.log(JSON.stringify({ a: a.status, other: [other.status, other.body.error], taken: taken.status,
+            lock: [lock.status, mine.locked, mine.lock_kind], drop: [drop.status, drop.body.error], remove: remove.status, name: remove.body.error }));""")
+        self.assertEqual(r["a"], 200)
+        self.assertEqual(r["other"][0], 409)
+        self.assertIn("already registered as Visitor One", r["other"][1])
+        self.assertEqual(r["taken"], 403)                                        # a made-up player's name belongs to someone else
+        self.assertEqual(r["lock"], [200, True, "manual"])
+        self.assertEqual(r["drop"][0], 409)
+        self.assertIn("locked in", r["drop"][1])
+        self.assertEqual(r["remove"], 409)
+
+    def test_a_full_squad_gives_a_waitlist_and_a_bigger_squad_promotes(self):
+        r = self.run_js("""
+          const s = new DemoServer({ today: day(10, 14) });
+          const game = call(s, "GET", "/api/state").body.settings;
+          const update = max => call(s, "POST", "/api/game", { club_name: "Football Not Soccer Club", location: game.location, game_date: game.game_date,
+            kickoff: "16:00", end_time: "18:00", notes: "x", max_players: max });
+          update(12);
+          const joined = call(s, "POST", "/api/rsvps", { name: "Late One", status: "going" }).body.rsvps.find(r => r.mine);
+          const lock = call(s, "POST", "/api/lock", { name: "Late One" });
+          const promoted = update(13).body.rsvps.find(r => r.mine);
+          const tooSmall = update(5);
+          console.log(JSON.stringify({ joined: [joined.waitlisted, joined.waitlist_pos], lock: lock.status, promoted: [promoted.waitlisted, promoted.waitlist_pos], tooSmall: [tooSmall.status, tooSmall.body.error] }));""")
+        self.assertEqual(r["joined"], [True, 1])
+        self.assertEqual(r["lock"], 409)                                          # a waitlisted spot cannot be locked
+        self.assertEqual(r["promoted"], [False, None])
+        self.assertEqual(r["tooSmall"][0], 409)
+        self.assertIn("already going", r["tooSmall"][1])
+
+    def test_a_cancelled_game_stops_new_yes_answers_but_not_out(self):
+        r = self.run_js("""
+          const s = new DemoServer({ today: day(10, 14) });
+          call(s, "POST", "/api/notice", { text: "", kind: "cancelled" });
+          const st = call(s, "GET", "/api/state").body;
+          const yes = call(s, "POST", "/api/rsvps", { name: "Visitor", status: "going" });
+          const no = call(s, "POST", "/api/rsvps", { name: "Visitor", status: "out" });
+          const cleared = call(s, "POST", "/api/notice", { text: "", kind: "info" }).body.notice;
+          console.log(JSON.stringify({ notice: st.notice, yes: yes.status, no: no.status, cleared }));""")
+        self.assertEqual(r["notice"], {"text": "This game is cancelled.", "kind": "cancelled"})
+        self.assertEqual((r["yes"], r["no"], r["cleared"]), (409, 200, None))
+
+    def test_spots_lock_by_themselves_the_day_before_the_game(self):
+        r = self.run_js("""
+          const s = new DemoServer({ today: day(10, 21) });
+          const game = call(s, "GET", "/api/state").body.settings;
+          call(s, "POST", "/api/game", { club_name: "Football Not Soccer Club", location: game.location, game_date: "2026-10-22", kickoff: "16:00", end_time: "18:00", notes: "x", max_players: 14 });
+          const st = call(s, "POST", "/api/rsvps", { name: "Visitor", status: "going" }).body;
+          const mine = st.rsvps.find(r => r.mine);
+          const drop = call(s, "POST", "/api/rsvps", { name: "Visitor", status: "maybe" });
+          console.log(JSON.stringify({ auto: st.settings.auto_locked, from: st.settings.lock_from, mine: [mine.locked, mine.lock_kind], drop: drop.status }));""")
+        self.assertEqual((r["auto"], r["from"], r["mine"], r["drop"]), (True, "2026-10-21", [True, "auto"], 409))
+
+    def test_bad_input_is_refused_like_the_real_server(self):
+        r = self.run_js("""
+          const s = new DemoServer({ today: day(10, 14) });
+          const names = ["", "   ", "x".repeat(37), "bell\x07", "zero\u200bwidth"].map(n => call(s, "POST", "/api/rsvps", { name: n, status: "going" }).status);
+          const status = call(s, "POST", "/api/rsvps", { name: "Ok", status: "dancing" }).status;
+          const game = call(s, "GET", "/api/state").body.settings;
+          const base = { club_name: "Club", location: "Field", game_date: game.game_date, kickoff: "16:00", end_time: "18:00", max_players: 14 };
+          const bad = [{ game_date: "2026-10-23" }, { game_date: "2026-10-08" }, { kickoff: "6pm" }, { end_time: "15:00" }, { max_players: 1 }, { max_players: "14" }, { club_name: "x" }]
+            .map(o => call(s, "POST", "/api/game", { ...base, ...o }).status);
+          const permit = [["x", "2026-12-01"], ["Permit", "2026-10-01"], ["Permit", "soon"], ["Permit", "2040-01-01"]].map(([t, d]) => call(s, "POST", "/api/permits", { title: t, date: d }).status);
+          console.log(JSON.stringify({ names, status, bad, permit, unknown: call(s, "POST", "/api/nothing", {}).status }));""")
+        self.assertEqual(r["names"], [400] * 5)
+        self.assertEqual(r["status"], 400)
+        self.assertEqual(r["bad"], [400] * 7)
+        self.assertEqual(r["permit"], [400] * 4)
+        self.assertEqual(r["unknown"], 404)
+
+    def test_the_state_survives_a_reload_through_storage(self):
+        r = self.run_js("""
+          const store = { data: {}, getItem(k) { return this.data[k] ?? null; }, setItem(k, v) { this.data[k] = v; } };
+          const first = new DemoServer({ today: day(10, 14), storage: store });
+          call(first, "POST", "/api/rsvps", { name: "Visitor", status: "going" });
+          call(first, "POST", "/api/shuffle", {});
+          const second = new DemoServer({ today: day(10, 14), storage: store });
+          const st = call(second, "GET", "/api/state").body;
+          console.log(JSON.stringify({ name: st.player_name, mine: st.rsvps.filter(r => r.mine).length, seed: st.settings.team_seed > 0 }));""")
+        self.assertEqual(r, {"name": "Visitor", "mine": 1, "seed": True})
+
+    def test_the_demo_returns_the_same_data_shape_as_the_real_server(self):
+        """If the real API gains or loses a field, the page would break on the website. This test catches the drift."""
+        real = pp.Store(os.path.join(tempfile.mkdtemp(), "data"), lambda: TODAY)
+        self.addCleanup(shutil.rmtree, real.dir.parent, True)
+        real.initialize()
+        real.save_rsvp("Shape Check", "going", TOKEN_A)
+        real.add_permit("Permit", "2026-11-20", "note")
+        real.set_notice("Update", "info")
+        real_state = real.state(TOKEN_A)
+        demo = self.run_js("""
+          const s = new DemoServer({ today: day(10, 13) });
+          call(s, "POST", "/api/rsvps", { name: "Shape Check", status: "going" });
+          call(s, "POST", "/api/permits", { title: "Permit", date: "2026-11-20", note: "note" });
+          call(s, "POST", "/api/notice", { text: "Update", kind: "info" });
+          const st = call(s, "GET", "/api/state").body;
+          console.log(JSON.stringify({ top: Object.keys(st).sort(), settings: Object.keys(st.settings).sort(), row: Object.keys(st.rsvps.find(r => r.mine)).sort(),
+            permit: Object.keys(st.permits[0]).sort(), notice: Object.keys(st.notice).sort() }));""")
+        server_top = sorted(set(real_state) | {"organizer_required"})            # the HTTP layer adds this field
+        self.assertEqual(demo["top"], server_top)
+        self.assertEqual(demo["settings"], sorted(real_state["settings"]))
+        self.assertEqual(demo["row"], sorted([k for k in real_state["rsvps"][0]]))
+        self.assertEqual(demo["permit"], sorted(real_state["permits"][0]))
+        self.assertEqual(demo["notice"], sorted(real_state["notice"]))
+
+
+class DemoBuildTests(unittest.TestCase):
+    def test_the_static_site_uses_relative_paths_and_loads_the_demo_before_the_app(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("build_demo", os.path.join(os.path.dirname(__file__), "..", "scripts", "build_demo.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        files = module.build(out)
+        for name in ("index.html", "app.js", "demo.js", "celebrate.js", "styles.css", ".nojekyll"):
+            self.assertIn(name, files)
+        page = open(os.path.join(out, "index.html"), encoding="utf-8").read()
+        self.assertNotRegex(page, r'(?:src|href)="/')                            # an absolute path would break under /pickup-poll/
+        self.assertLess(page.index('src="demo.js"'), page.index('src="app.js"'))
+        self.assertNotIn("app.py", " ".join(files))                              # the server is not part of the website
+
+    def test_the_checked_in_site_is_up_to_date(self):
+        import importlib.util
+        root = os.path.join(os.path.dirname(__file__), "..")
+        spec = importlib.util.spec_from_file_location("build_demo", os.path.join(root, "scripts", "build_demo.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        module.build(out)
+        for name in os.listdir(out):
+            with open(os.path.join(out, name), "rb") as fresh, open(os.path.join(root, "docs", name), "rb") as kept:
+                self.assertEqual(fresh.read(), kept.read(), f"docs/{name} is out of date: run python3 scripts/build_demo.py")
+
+
 class CalendarFileTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_the_calendar_file_is_valid_and_cannot_be_injected_into(self):

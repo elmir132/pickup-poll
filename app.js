@@ -578,7 +578,7 @@ async function invite() {
   if (!appState) return;
   const s = appState.settings;
   const text = `${s.club_name}: ${formatDate(s.game_date, { weekday: "long", month: "long", day: "numeric" })}, ${formatTime(s.kickoff)} to ${formatTime(s.end_time)} at ${s.location}. Are you in?`;
-  const url = `${location.origin}/`;
+  const url = `${location.origin}${location.pathname}`;
   if (navigator.share) {
     try { await navigator.share({ title: s.club_name, text, url }); return; } catch (error) { if (error.name === "AbortError") return; }
   }
