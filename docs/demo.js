@@ -112,6 +112,7 @@
       const s = this.settings;
       const here = this.notice && this.notice.game === game && this.notice.text;
       return { today: isoDate(this.today()), player_name: this.identity ? this.identity.name : null,
+        player_has_email: false, email_required: false, join_code_required: false,   // the demo asks for neither
         settings: { club_name: s.club_name, game_date: game, kickoff: s.kickoff, end_time: s.end_time, location: s.location, notes: s.notes,
           max_players: s.max_players, lock_from: isoDate(addDays(this.gameDate(), -LOCK_DAYS_BEFORE)), auto_locked: this.autoLocked(),
           team_seed: s.team_seed_game === game ? s.team_seed : 0 },

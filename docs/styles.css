@@ -513,3 +513,16 @@ body.view-permits .teams-panel { display: none; }
 .demo-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: #fbf4d6; border: 1px solid #ecd98a; color: #5c4a05; font-size: 12px; line-height: 1.4; }
 .demo-banner a { color: inherit; font-weight: 700; }
 :root[data-theme="dark"] .demo-banner { background: #292916; border-color: #514b2c; color: #e5dca9; }
+
+/* Club code and Cornell email fields (shown only when the server asks for them) */
+.join-extra { display: grid; gap: 6px; margin-top: 6px; }
+.roster-copy-tools > div, .roster-copy-tools { flex-wrap: wrap; }
+
+/* Organizer sign-ups list */
+.signup-list { display: grid; gap: 8px; max-height: 60vh; overflow-y: auto; margin-top: 4px; }
+.signup-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; }
+.signup-who { display: grid; gap: 2px; min-width: 0; }
+.signup-who strong { font-size: 14px; }
+.signup-email { font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+.signup-when { font-size: 11px; color: var(--muted); }
+.signup-row .button-quiet { flex: none; padding: 8px 12px; }

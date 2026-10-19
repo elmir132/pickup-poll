@@ -46,7 +46,8 @@ DEFAULTS = {"club_name": "Football Not Soccer Club", "kickoff": "16:00", "end_ti
 OLD_DEFAULTS = {"club_name": ("Thursday United",), "kickoff": ("18:30",),
                 "location": ("Add your field or meeting point", "Your usual pitch")}
 LOCK_DAYS_BEFORE = 1       # from this many days before the game, spots that are going are locked
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+CORNELL_EMAIL_RE = re.compile(r"^[a-z0-9._%+-]{1,64}@cornell\.edu$")
 SAMPLE_NAMES = ("Maya T.", "Chris L.", "Jordan K.", "Alex R.", "Sam P.", "Taylor W.")
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -104,7 +105,17 @@ def name_key(name):
 # Storage
 # ---------------------------------------------------------------------------
 
+def clean_email(value):
+    """A Cornell address, lower-cased. Only the organizer ever sees it."""
+    email = value.strip().lower() if isinstance(value, str) else ""
+    if not CORNELL_EMAIL_RE.fullmatch(email):
+        raise PollError("Enter your Cornell email (ending in @cornell.edu).")
+    return email
+
+
 class Store:
+    require_email = False      # set by make_server: new players must give a Cornell email
+
     def __init__(self, data_dir, today=date.today):
         self.dir = Path(data_dir)
         self.path = self.dir / "pickup-poll.sqlite3"
@@ -192,6 +203,10 @@ class Store:
                 name_key TEXT NOT NULL,
                 name TEXT NOT NULL
             )""")
+        # Version 4: an optional Cornell email per browser, seen only by the organizer.
+        if "email" not in {r["name"] for r in db.execute("PRAGMA table_info(player_identities)")}:
+            db.execute("ALTER TABLE player_identities ADD COLUMN email TEXT")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS identity_email ON player_identities(email) WHERE email IS NOT NULL")
         # Preserve a browser's first name from existing replies, including after its reply is removed.
         legacy_identities = list(db.execute(
             "SELECT owner_hash, name_key, name FROM rsvps "
@@ -252,12 +267,12 @@ class Store:
         mine = None
         if token and TOKEN_RE.fullmatch(token):
             mine = hashlib.sha256(token.encode("ascii")).hexdigest()
-        player_name = None
+        player_name, has_email = None, False
         with closing(self.connect()) as db:
             if mine:
-                identity = db.execute("SELECT name FROM player_identities WHERE owner_hash = ?", (mine,)).fetchone()
+                identity = db.execute("SELECT name, email FROM player_identities WHERE owner_hash = ?", (mine,)).fetchone()
                 if identity:
-                    player_name = identity["name"]
+                    player_name, has_email = identity["name"], bool(identity["email"])
             settings = self._settings(db)
             game = effective_game_date(settings.get("game_date"), self.today())
             cancelled = (settings.get("notice_game") == game.isoformat()
@@ -291,6 +306,8 @@ class Store:
         here = settings.get("notice_game") == game.isoformat() and settings.get("notice_text")
         return {"today": self.today().isoformat(),
                 "player_name": player_name,
+                "player_has_email": has_email,             # only whether one is saved, never the address
+                "email_required": self.require_email,
                 "settings": {"club_name": settings["club_name"], "game_date": game.isoformat(), "kickoff": settings["kickoff"],
                              "end_time": settings["end_time"], "location": settings["location"], "notes": settings["notes"],
                              "max_players": int(settings["max_players"]),
@@ -322,19 +339,26 @@ class Store:
                 return
             db.execute("UPDATE rsvps SET waitlisted = 0, waitlist_at = NULL WHERE game_date = ? AND name_key = ?", (game, nxt["name_key"]))
 
-    def save_rsvp(self, name, status, token):
+    def save_rsvp(self, name, status, token, email=None):
         name = clean_text(name, "Your name", 1, 36, "Enter your name (up to 36 characters).")
         if not isinstance(status, str) or status not in STATUSES:
             raise PollError("Choose going, maybe or out.")
         owner = token_hash(token)
         key = name_key(name)
+        given = clean_email(email) if email not in (None, "") else None     # whether one is needed is decided below
         with self.tx() as db:
             game = self._game_date(db).isoformat()
             if status != "out" and self._cancelled(db, game):
                 raise PollError("This game is cancelled. Check the update at the top of the page.", 409)
-            identity = db.execute("SELECT name_key, name FROM player_identities WHERE owner_hash = ?", (owner,)).fetchone()
+            identity = db.execute("SELECT name_key, name, email FROM player_identities WHERE owner_hash = ?", (owner,)).fetchone()
             if identity and identity["name_key"] != key:
                 raise PollError(f"This browser is already registered as {identity['name']}. Use that name for your reply.", 409)
+            saved_email = identity["email"] if identity else None
+            if saved_email is None and given is None and self.require_email:
+                raise PollError("Enter your Cornell email (ending in @cornell.edu).")
+            new_email = given if saved_email is None else None          # the first email a browser gives is kept
+            if new_email and db.execute("SELECT 1 FROM player_identities WHERE email = ? AND owner_hash != ?", (new_email, owner)).fetchone():
+                raise PollError("That Cornell email is already signed up from another browser. Use that one, or message the organizer.", 409)
             row = db.execute("SELECT owner_hash, is_sample, status, locked, waitlisted FROM rsvps WHERE game_date = ? AND name_key = ?", (game, key)).fetchone()
             if row and row["owner_hash"] and row["owner_hash"] != owner and not row["is_sample"]:
                 raise PollError("That name was added from another device. Use a different name (for example add an initial).", 403)
@@ -351,10 +375,13 @@ class Store:
                 waitlisted = int(taken >= limit)
             stamp = time.time_ns() if waitlisted else None
             if identity is None:
-                db.execute("INSERT INTO player_identities(owner_hash, name_key, name) VALUES (?, ?, ?)",
-                           (owner, key, name))
-            elif identity["name"] != name:
-                db.execute("UPDATE player_identities SET name = ? WHERE owner_hash = ?", (name, owner))
+                db.execute("INSERT INTO player_identities(owner_hash, name_key, name, email) VALUES (?, ?, ?, ?)",
+                           (owner, key, name, new_email))
+            else:
+                if identity["name"] != name:
+                    db.execute("UPDATE player_identities SET name = ? WHERE owner_hash = ?", (name, owner))
+                if new_email:
+                    db.execute("UPDATE player_identities SET email = ? WHERE owner_hash = ?", (new_email, owner))
             db.execute("INSERT INTO rsvps(game_date, name_key, name, status, updated_at, is_sample, owner_hash, waitlisted, waitlist_at) "
                        "VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?) "
                        "ON CONFLICT(game_date, name_key) DO UPDATE SET name = excluded.name, status = excluded.status, "
@@ -493,6 +520,29 @@ class Store:
         with self.tx() as db:
             db.execute("DELETE FROM rsvps WHERE game_date = ?", (self._game_date(db).isoformat(),))
 
+    def signups(self):
+        """Organizer only: this game's replies with the Cornell email each browser gave and when the reply was saved."""
+        with closing(self.connect()) as db:
+            game = self._game_date(db).isoformat()
+            rows = db.execute(
+                "SELECT r.name, r.status, r.waitlisted, r.updated_at, r.is_sample, i.email FROM rsvps r "
+                "LEFT JOIN player_identities i ON i.owner_hash = r.owner_hash WHERE r.game_date = ? "
+                "ORDER BY r.rowid", (game,))
+            return [{"name": r["name"], "status": r["status"], "waitlisted": bool(r["waitlisted"]), "updated_at": r["updated_at"],
+                     "is_sample": bool(r["is_sample"]), "email": r["email"]} for r in rows]
+
+    def remove_player(self, name):
+        """Organizer only: remove any name from this game, even a locked one. The browser keeps its identity,
+        so it cannot come back under a different name or email."""
+        name = clean_text(name, "Player", 1, 36, "Choose a player to remove.")
+        with self.tx() as db:
+            game = self._game_date(db).isoformat()
+            row = db.execute("SELECT owner_hash FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name))).fetchone()
+            if row is None:
+                raise PollError("That player is not on this week's list.", 404)
+            db.execute("DELETE FROM rsvps WHERE game_date = ? AND name_key = ?", (game, name_key(name)))
+            self._promote(db, game)
+
 
 # ---------------------------------------------------------------------------
 # Who may do what
@@ -559,9 +609,11 @@ class Limiter:
 
 
 class Security:
-    def __init__(self, bind_host, pin=None, extra_hosts=(), clock=time.monotonic):
+    def __init__(self, bind_host, pin=None, extra_hosts=(), clock=time.monotonic, join_code=None):
         self.bind_host = bind_host
         self.pin = pin
+        self.join_code = join_code or None
+        self.code_misses = Limiter(10, 600, clock)     # wrong club codes: 10 per 10 minutes per address
         self.names = local_names(bind_host) | {h.lower() for h in extra_hosts}
         self.private_ips_ok = not is_loopback(bind_host)
         self.clock = clock
@@ -583,6 +635,17 @@ class Security:
             except ValueError:
                 return False
         return False
+
+    def check_join_code(self, client, provided):
+        """The club code from the group chat. Spaces and capitals do not matter; guessing is slowed down."""
+        if self.join_code is None:
+            return
+        given = provided.strip().lower() if isinstance(provided, str) else ""
+        if given and hmac.compare_digest(given.encode("utf-8"), self.join_code.strip().lower().encode("utf-8")):
+            return
+        if not self.code_misses.allow(client):
+            raise PollError("Too many wrong club codes. Try again in a few minutes.", 429)
+        raise PollError("Enter the club code from the group chat." if not given else "That club code is not right.", 403)
 
     def check_pin(self, client, provided):
         if self.pin is None:
@@ -700,6 +763,7 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/state":
                 state = self.poll.store.state(self.headers.get("X-Player-Token"))
                 state["organizer_required"] = self.poll.security.pin is not None
+                state["join_code_required"] = self.poll.security.join_code is not None
                 self._send(200, state)
             elif parsed.path in STATIC:
                 filename, content_type = STATIC[parsed.path]
@@ -719,7 +783,19 @@ class Handler(BaseHTTPRequestHandler):
             data = self._json_body()
             store = self.poll.store
             if path == "/api/rsvps":
-                store.save_rsvp(data.get("name"), data.get("status"), self.headers.get("X-Player-Token"))
+                self.poll.security.check_join_code(self.client_ip(), data.get("join_code"))
+                store.save_rsvp(data.get("name"), data.get("status"), self.headers.get("X-Player-Token"), data.get("email"))
+            elif path == "/api/signups":
+                if self.poll.security.pin is None:
+                    raise PollError("An organizer PIN must be configured to see sign-up details.", 403)
+                self._need_organizer()
+                self._send(200, {"players": store.signups()})
+                return
+            elif path == "/api/remove-player":
+                if self.poll.security.pin is None:
+                    raise PollError("An organizer PIN must be configured to remove other players.", 403)
+                self._need_organizer()
+                store.remove_player(data.get("name"))
             elif path == "/api/lock":
                 store.lock_rsvp(data.get("name"), self.headers.get("X-Player-Token"))
             elif path == "/api/locked-squad":
@@ -752,6 +828,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise PollError("Not found.", 404)
             state = store.state(self.headers.get("X-Player-Token"))
             state["organizer_required"] = self.poll.security.pin is not None
+            state["join_code_required"] = self.poll.security.join_code is not None
             self._send(200, state)
         except PollError as err:
             self._fail(err)
@@ -774,6 +851,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise PollError("Not found.", 404)
             state = self.poll.store.state(self.headers.get("X-Player-Token"))
             state["organizer_required"] = self.poll.security.pin is not None
+            state["join_code_required"] = self.poll.security.join_code is not None
             self._send(200, state)
         except PollError as err:
             self._fail(err)
@@ -784,7 +862,8 @@ class Handler(BaseHTTPRequestHandler):
     do_PUT = do_PATCH = do_OPTIONS = do_HEAD = _method_not_allowed
 
 
-def make_server(data_dir, host="127.0.0.1", port=8787, pin=None, extra_hosts=(), demo=False, today=date.today, trust_proxy=False):
+def make_server(data_dir, host="127.0.0.1", port=8787, pin=None, extra_hosts=(), demo=False, today=date.today, trust_proxy=False,
+                join_code=None, require_email=False):
     """Build the server. A PIN is required when the server can be reached from other devices;
     one is generated if none is given. Returns (server, pin_was_generated)."""
     generated = False
@@ -797,11 +876,16 @@ def make_server(data_dir, host="127.0.0.1", port=8787, pin=None, extra_hosts=(),
         pin, generated = "".join(secrets.choice("0123456789") for _ in range(6)), True
     if pin is not None and len(pin) < 4:
         raise ValueError("The organizer PIN must be at least 4 characters.")
+    if join_code is not None and len(join_code.strip()) < 4:
+        raise ValueError("The club code must be at least 4 characters.")
+    if require_email and pin is None:
+        raise ValueError("Asking for emails needs an organizer PIN, so that only the organizer can read them.")
     store = Store(data_dir, today)
+    store.require_email = bool(require_email)
     store.initialize(demo)
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
-    server.poll = PollApp(store, Security(host, pin, extra_hosts), trust_proxy)
+    server.poll = PollApp(store, Security(host, pin, extra_hosts, join_code=join_code), trust_proxy)
     return server, generated
 
 
@@ -814,9 +898,14 @@ def main(argv=None):
     parser.add_argument("--allow-host", action="append", default=[], metavar="NAME", help="an extra host name this server may answer to")
     parser.add_argument("--trust-proxy", action="store_true", help="read the visitor's address from the tunnel or proxy (needs 127.0.0.1 and a PIN)")
     parser.add_argument("--demo", action="store_true", help="fill an empty database with clearly marked sample players and dates")
+    parser.add_argument("--join-code", default=os.environ.get("PICKUP_POLL_JOIN_CODE") or None,
+                        help="club code players must enter to sign up (or set PICKUP_POLL_JOIN_CODE)")
+    parser.add_argument("--require-email", action="store_true", default=os.environ.get("PICKUP_POLL_REQUIRE_EMAIL", "").lower() in ("1", "yes", "true"),
+                        help="new players must give a Cornell email, seen only by the organizer (or set PICKUP_POLL_REQUIRE_EMAIL=1)")
     args = parser.parse_args(argv)
     try:
-        server, generated = make_server(args.data_dir, args.host, args.port, args.organizer_pin, args.allow_host, args.demo, trust_proxy=args.trust_proxy)
+        server, generated = make_server(args.data_dir, args.host, args.port, args.organizer_pin, args.allow_host, args.demo,
+                                        trust_proxy=args.trust_proxy, join_code=args.join_code, require_email=args.require_email)
     except (ValueError, OSError) as err:
         print(f"pickup-poll: {err}")
         return 1

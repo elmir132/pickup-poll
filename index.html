@@ -117,6 +117,16 @@
           <label class="join-label" for="player-name">Your name</label>
           <input id="player-name" name="name" maxlength="36" placeholder="First name and initial" autocomplete="name" enterkeyhint="go" aria-describedby="player-name-hint" required>
           <p class="join-hint" id="player-name-hint">One name per browser. You can still change your reply.</p>
+          <div class="join-extra hidden" id="email-field">
+            <label class="join-label" for="player-email">Cornell email</label>
+            <input id="player-email" name="email" type="email" maxlength="90" placeholder="netid@cornell.edu" autocomplete="email" inputmode="email" aria-describedby="player-email-hint">
+            <p class="join-hint" id="player-email-hint">Only the organizer sees this, to check sign-ups are real.</p>
+          </div>
+          <div class="join-extra hidden" id="code-field">
+            <label class="join-label" for="join-code">Club code</label>
+            <input id="join-code" name="join_code" maxlength="40" placeholder="From the group chat" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="join-code-hint">
+            <p class="join-hint" id="join-code-hint">Asked once. This browser remembers it.</p>
+          </div>
           <div class="join-actions" role="group" aria-label="Your answer">
             <button class="join-btn join-in" id="join-in" type="submit" data-status="going"><span id="join-in-label">I'm in</span></button>
             <button class="join-btn" type="button" data-status="maybe">Maybe</button>
@@ -128,7 +138,8 @@
         <div class="roster-header"><span>PLAYER</span><div><span>STATUS</span><span class="sr-only">Remove player</span></div></div>
         <div class="roster-list" id="roster-list" aria-live="polite"></div>
         <div class="roster-copy-tools hidden" id="roster-copy-tools">
-          <span>Locked squad · organizer only</span>
+          <span>Organizer only</span>
+          <button class="button button-quiet" id="open-signups" type="button" title="See each sign-up's Cornell email and remove fake names">Check sign-ups</button>
           <button class="button button-quiet" id="copy-locked-squad" type="button" title="Copy confirmed locked names, one per line, for WhatsApp">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2"/></svg>
             Copy locked names
@@ -222,6 +233,13 @@
       <button class="button button-green" type="submit">Post update <span aria-hidden="true">→</span></button>
       <button class="button-link-danger" id="notice-clear" type="button">Remove the current update</button>
     </form>
+  </dialog>
+
+  <dialog class="app-dialog" id="signups-dialog">
+    <form method="dialog" class="dialog-close-row"><button class="dialog-close" aria-label="Close">×</button></form>
+    <h2>Sign-ups<span class="title-period">.</span></h2>
+    <p class="dialog-copy">Each name with the Cornell email its browser gave and when it was saved. Remove anyone who should not be there; the waitlist moves up.</p>
+    <div class="signup-list" id="signup-list"></div>
   </dialog>
 
   <dialog class="app-dialog" id="pin-dialog">

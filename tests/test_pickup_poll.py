@@ -974,7 +974,7 @@ class DemoModeTests(unittest.TestCase):
           const st = call(s, "GET", "/api/state").body;
           console.log(JSON.stringify({ top: Object.keys(st).sort(), settings: Object.keys(st.settings).sort(), row: Object.keys(st.rsvps.find(r => r.mine)).sort(),
             permit: Object.keys(st.permits[0]).sort(), notice: Object.keys(st.notice).sort() }));""")
-        server_top = sorted(set(real_state) | {"organizer_required"})            # the HTTP layer adds this field
+        server_top = sorted(set(real_state) | {"organizer_required", "join_code_required"})   # the HTTP layer adds these fields
         self.assertEqual(demo["top"], server_top)
         self.assertEqual(demo["settings"], sorted(real_state["settings"]))
         self.assertEqual(demo["row"], sorted([k for k in real_state["rsvps"][0]]))

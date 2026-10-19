@@ -79,6 +79,24 @@ function playerToken() {
   }
 }
 
+// The club code from the group chat: typed once, then kept in this browser.
+function storedCode() {
+  try { return localStorage.getItem("pickup-poll-join-code") || ""; } catch (error) { return window.pickupPollCode || ""; }
+}
+
+function storeCode(code) {
+  try { code ? localStorage.setItem("pickup-poll-join-code", code) : localStorage.removeItem("pickup-poll-join-code"); }
+  catch (error) { window.pickupPollCode = code; }
+}
+
+// Email and club code are only asked for when the server wants them and this browser has not given them yet.
+function renderJoinExtras() {
+  const needEmail = Boolean(appState && appState.email_required && !appState.player_has_email);
+  const needCode = Boolean(appState && appState.join_code_required && !storedCode());
+  $("#email-field").classList.toggle("hidden", !needEmail);
+  $("#code-field").classList.toggle("hidden", !needCode);
+}
+
 function storedPin() {
   try { return sessionStorage.getItem("pickup-poll-pin") || ""; } catch (error) { return ""; }
 }
@@ -171,6 +189,7 @@ function acceptState(next) {
   } else {
     $("#player-name-hint").textContent = "One name per browser. You can still change your reply.";
   }
+  renderJoinExtras();
   render();
 }
 
@@ -201,7 +220,8 @@ function render() {
   const waiting = real.filter(player => player.waitlisted);
   const maybe = real.filter(player => player.status === "maybe");
   const canCopySquad = appState.organizer_required && going.length > 0 && going.every(player => player.locked);
-  $("#roster-copy-tools").classList.toggle("hidden", !canCopySquad);
+  $("#roster-copy-tools").classList.toggle("hidden", !(appState.organizer_required && real.length > 0));
+  $("#copy-locked-squad").classList.toggle("hidden", !canCopySquad);
   const max = settings.max_players;
   const gameDate = dateAtNoon(settings.game_date);
   const month = new Intl.DateTimeFormat("en-US", { month: "short" }).format(gameDate).toUpperCase();
@@ -614,12 +634,27 @@ async function submitAnswer(status) {
     $("#player-name").focus();
     return;
   }
+  const email = $("#player-email").value.trim();
+  const code = storedCode() || $("#join-code").value.trim();
+  if (appState && appState.email_required && !appState.player_has_email && !email) {
+    toast("Add your Cornell email first.", true);
+    $("#player-email").focus();
+    return;
+  }
+  if (appState && appState.join_code_required && !code) {
+    toast("Add the club code from the group chat.", true);
+    $("#code-field").classList.remove("hidden");
+    $("#join-code").focus();
+    return;
+  }
   const currentRow = myRow();
   const wasGoing = Boolean(currentRow && currentRow.status === "going" && !currentRow.waitlisted);
   const joinOrigin = centerOf($("#join-in"));
   $$(".join-btn, #join-hero").forEach(button => { button.disabled = true; });
   try {
-    const next = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status }) });
+    const next = await api("/api/rsvps", { method: "POST", body: JSON.stringify({ name, status, email, join_code: code }) });
+    if (code) storeCode(code);
+    $("#join-code").value = "";
     try { localStorage.setItem("pickup-poll-name", name); } catch (error) { /* private mode */ }
     acceptState(next);
     const row = myRow();
@@ -631,9 +666,61 @@ async function submitAnswer(status) {
     else if (status === "maybe") toast("Marked as a maybe.");
     else toast("Got it, you're out this week.");
   } catch (error) {
+    if (error.status === 403 && /club code/.test(error.message)) {   // a wrong or changed code: ask again
+      storeCode("");
+      renderJoinExtras();
+      $("#join-code").focus();
+    }
     toast(error.message, true);
     render();
   }
+}
+
+// Organizer: every sign-up with its Cornell email, and a way to remove fake names.
+function renderSignups(players) {
+  const list = $("#signup-list");
+  list.replaceChildren();
+  if (!players.length) {
+    const empty = document.createElement("p");
+    empty.className = "dialog-copy";
+    empty.textContent = "No sign-ups yet.";
+    list.append(empty);
+    return;
+  }
+  players.forEach(player => {
+    const row = document.createElement("div");
+    row.className = "signup-row";
+    const who = document.createElement("div");
+    who.className = "signup-who";
+    const name = document.createElement("strong");
+    name.textContent = player.name;
+    const email = document.createElement("span");
+    email.className = "signup-email";
+    email.textContent = player.email || (player.is_sample ? "sample" : "no email given");
+    const when = document.createElement("span");
+    when.className = "signup-when";
+    const answer = player.waitlisted ? "waitlist" : STATUS_WORDS[player.status].toLowerCase();
+    when.textContent = `${answer} · ${player.updated_at.replace("T", " ")}`;
+    who.append(name, email, when);
+    const remove = document.createElement("button");
+    remove.className = "button button-quiet";
+    remove.type = "button";
+    remove.dataset.action = "organizer-remove";
+    remove.dataset.name = player.name;
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${player.name}`);
+    row.append(who, remove);
+    list.append(row);
+  });
+}
+
+async function openSignups() {
+  try {
+    const result = await asOrganizer(() => api("/api/signups", { method: "POST", body: "{}" }));
+    if (!result) return;
+    renderSignups(result.players);
+    if (!$("#signups-dialog").open) $("#signups-dialog").showModal();
+  } catch (error) { toast(error.message, true); }
 }
 
 async function copyLockedSquad() {
@@ -708,6 +795,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#add-to-calendar").addEventListener("click", downloadGameCalendar);
   $("#invite").addEventListener("click", invite);
   $("#copy-locked-squad").addEventListener("click", copyLockedSquad);
+  $("#open-signups").addEventListener("click", openSignups);
   $$(".post-notice-trigger").forEach(button => button.addEventListener("click", openNoticeDialog));
   $("#notice-form").addEventListener("submit", event => {
     event.preventDefault();
@@ -781,6 +869,17 @@ document.addEventListener("DOMContentLoaded", () => {
         acceptState(next);
         toast("RSVP removed.");
       } catch (error) { toast(error.message, true); }
+    }
+    if (target.dataset.action === "organizer-remove") {
+      if (!confirm(`Remove ${target.dataset.name} from this game? If someone is on the waitlist, they move up.`)) return;
+      try {
+        const next = await asOrganizer(() => api("/api/remove-player", { method: "POST", body: JSON.stringify({ name: target.dataset.name }) }));
+        if (!next) return;
+        acceptState(next);
+        toast(`${target.dataset.name} was removed.`);
+        await openSignups();
+      } catch (error) { toast(error.message, true); }
+      return;
     }
     if (target.dataset.action === "remove-permit") {
       try {
